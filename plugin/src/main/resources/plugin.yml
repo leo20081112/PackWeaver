@@ -1,16 +1,16 @@
-name: DatapackEditor
+name: PackWeaver
 version: '${version}'
 main: com.dpe.server.DatapackEditorPlugin
 api-version: '1.21'
-author: dpe
-description: In-game datapack editor for Paper servers.
+author: PackWeaver
+description: PackWeaver - In-Game Datapack Studio. Block editor, IDE mode, autocomplete, vanilla manual, templates, one-key reload for Paper servers.
 commands:
   datapackeditor:
-    description: Manage and edit datapacks in-game.
-    aliases: [dpe]
-    usage: /datapackeditor [help|chat|add <schemaId>|list|compile|reload|<namespace>]
+    description: Manage and edit datapacks in-game with PackWeaver.
+    aliases: [dpe, packweaver, pw]
+    usage: /dpe [help|chat|add <schemaId>|list|compile|reload|wiki [keyword] [page]|template [list|<id>]|<namespace>]
     permission: dpe.use
 permissions:
   dpe.use:
-    description: Allows use of the DatapackEditor commands.
+    description: Allows use of the PackWeaver commands.
     default: op

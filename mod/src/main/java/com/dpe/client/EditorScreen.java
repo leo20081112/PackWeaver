@@ -9,8 +9,11 @@ import com.dpe.common.block.EditorBlock;
 import com.dpe.common.block.EditorState;
 import com.dpe.common.compile.BlockCompiler;
 import com.dpe.common.compile.CompileResult;
+import com.dpe.common.compile.ValidationError;
+import com.dpe.common.config.UserConfig;
 import com.dpe.common.editor.Canvas;
-import com.dpe.common.protocol.SaveApplyMessage;
+import com.dpe.common.reload.ReloadResult;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
@@ -22,15 +25,19 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * Scratch 风格积木编辑器主屏幕：调色板 / 画布（拖拽+缩放）/ 字段编辑 / 编译预览 / 导出。
+ * Scratch 风格积木编辑器主屏幕：
+ * 左侧可滚动调色板（分类折叠）/ 画布（拖拽+缩放）/ 字段编辑 / 编译预览 / 导出 / 重载。
+ * 顶部按钮：编译 / 切到 IDE(M) / 重载(R) / 手册 / 设置 / 帮助(F1) / 关闭。
  */
 public class EditorScreen extends Screen {
 
-    private static final int PALETTE_W = 130;
+    private static final int PALETTE_W = 140;
     private static final int FIELD_PANEL_W = 210;
     private static final int TOP_BAR_H = 22;
     private static final int BOTTOM_BAR_H = 24;
@@ -62,6 +69,23 @@ public class EditorScreen extends Screen {
 
     private final Map<String, TextFieldWidget> fieldTextFields = new HashMap<>();
 
+    /** 调色板滚动偏移。 */
+    private int paletteScroll = 0;
+    /** 折叠的分类集合。 */
+    private final Set<BlockCategory> collapsedCategories = new HashSet<>();
+    /** 调色板是否可见（P 切换）。 */
+    private boolean paletteVisible = true;
+
+    /** 调色板布局缓存（在 init/render 间复用）。 */
+    private final List<PaletteRow> paletteRows = new ArrayList<>();
+    private static final int PALETTE_ROW_H = 13;
+    private static final int PALETTE_HEADER_H = 16;
+
+    /** 新手引导。 */
+    private OnboardingOverlay onboarding;
+    /** 字体缩放倍率（来自 UserConfig.fontSize）。 */
+    private float fontScale = 1.0f;
+
     public EditorScreen(EditorState state) {
         super(Text.literal("Datapack Editor"));
         this.state = state == null ? new EditorState() : state;
@@ -72,37 +96,45 @@ public class EditorScreen extends Screen {
     @Override
     protected void init() {
         fieldTextFields.clear();
-        int bottomY = this.height - BOTTOM_BAR_H;
 
-        // 顶部操作按钮（画布区上方）
-        int topBtnX = PALETTE_W + 4;
-        addDrawableChild(ButtonWidget.builder(Text.literal("Compile"), b -> showCompilePreview())
-                .dimensions(topBtnX, 2, 70, 16).build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("Export Zip"), b -> exportZip())
-                .dimensions(topBtnX + 74, 2, 80, 16).build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("Save & Apply"), b -> saveAndApply())
-                .dimensions(topBtnX + 158, 2, 100, 16).build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("Close"), b -> close())
-                .dimensions(this.width - 60, 2, 50, 16).build());
-
-        // 左侧调色板：按 BlockCategory 分组列出 schema
-        int py = TOP_BAR_H + 4;
-        for (BlockCategory cat : BlockCategory.values()) {
-            py += 4;
-            addDrawableChild(ButtonWidget.builder(Text.literal("[" + cat.name() + "]"), b -> {})
-                    .dimensions(4, py, PALETTE_W - 8, 12).build());
-            py += 14;
-            for (BlockSchema schema : reg.byCategory(cat)) {
-                String schemaId = schema.id();
-                addDrawableChild(ButtonWidget.builder(
-                                Text.literal(schema.label()),
-                                b -> addBlock(schemaId))
-                        .dimensions(6, py, PALETTE_W - 12, 14).build());
-                py += 15;
-            }
+        UserConfig cfg = DatapackEditorClient.config();
+        // 应用字体缩放
+        fontScale = (float) (cfg != null && cfg.fontSize > 0 ? cfg.fontSize : 1.0);
+        Path configPath = DatapackEditorClient.configPath(this.client);
+        if (onboarding == null) {
+            onboarding = new OnboardingOverlay(this, cfg, configPath);
+        } else {
+            // 切屏后路径不变，沿用
+            onboarding = new OnboardingOverlay(this, cfg, configPath);
         }
 
-        // 右侧字段编辑区
+        // 顶部按钮
+        int topBtnX = PALETTE_W + 4;
+        int bx = topBtnX;
+        addDrawableChild(ButtonWidget.builder(Text.literal("编译"), b -> showCompilePreview())
+                .dimensions(bx, 2, 50, 16).build());
+        bx += 52;
+        addDrawableChild(ButtonWidget.builder(Text.literal("切到IDE (M)"), b -> switchToIde())
+                .dimensions(bx, 2, 90, 16).build());
+        bx += 92;
+        addDrawableChild(ButtonWidget.builder(Text.literal("重载 (R)"), b -> doReload())
+                .dimensions(bx, 2, 70, 16).build());
+        bx += 72;
+        addDrawableChild(ButtonWidget.builder(Text.literal("导出Zip"), b -> exportZip())
+                .dimensions(bx, 2, 70, 16).build());
+        bx += 72;
+        addDrawableChild(ButtonWidget.builder(Text.literal("保存应用"), b -> saveAndApply())
+                .dimensions(bx, 2, 70, 16).build());
+        bx += 72;
+        addDrawableChild(ButtonWidget.builder(Text.literal("手册"), b -> openManual())
+                .dimensions(bx, 2, 50, 16).build());
+        bx += 52;
+        addDrawableChild(ButtonWidget.builder(Text.literal("设置"), b -> openSettings())
+                .dimensions(bx, 2, 50, 16).build());
+        addDrawableChild(ButtonWidget.builder(Text.literal("关闭"), b -> close())
+                .dimensions(this.width - 50, 2, 46, 16).build());
+
+        // 字段编辑区
         int fx = this.width - FIELD_PANEL_W + 4;
         int fw = FIELD_PANEL_W - 8;
         int fy = TOP_BAR_H + 4;
@@ -117,13 +149,12 @@ public class EditorScreen extends Screen {
                     fy = drawFieldWidget(fx, fy, fw, field, selected);
                 }
                 fy += 6;
-                // 连接 / 删除
                 addDrawableChild(ButtonWidget.builder(
-                                Text.literal(linkMode ? "Click child..." : "Link Child"),
+                                Text.literal(linkMode ? "点子块..." : "连接子块"),
                                 b -> toggleLinkMode())
                         .dimensions(fx, fy, fw, 14).build());
                 fy += 15;
-                addDrawableChild(ButtonWidget.builder(Text.literal("Delete Block"), b -> deleteSelected())
+                addDrawableChild(ButtonWidget.builder(Text.literal("删除积木"), b -> deleteSelected())
                         .dimensions(fx, fy, fw, 14).build());
                 fy += 15;
             }
@@ -137,10 +168,28 @@ public class EditorScreen extends Screen {
                     })
                     .dimensions(this.width - 30, this.height - 30, 20, 20).build());
         }
+
+        rebuildPaletteRows();
+    }
+
+    /** 计算调色板行布局。 */
+    private void rebuildPaletteRows() {
+        paletteRows.clear();
+        for (BlockCategory cat : BlockCategory.values()) {
+            paletteRows.add(new PaletteRow(cat, null, true));
+            if (!collapsedCategories.contains(cat)) {
+                for (BlockSchema s : reg.byCategory(cat)) {
+                    paletteRows.add(new PaletteRow(cat, s, false));
+                }
+            }
+        }
+    }
+
+    /** 调色板行：分类头或 schema 项。 */
+    private record PaletteRow(BlockCategory category, BlockSchema schema, boolean header) {
     }
 
     private int drawFieldHeader(int x, int y, int w, BlockSchema schema, EditorBlock block) {
-        // 仅占位，实际渲染在 render() 中
         addDrawableChild(ButtonWidget.builder(Text.literal(schema.label()), b -> {})
                 .dimensions(x, y, w, 14).build());
         return y + 16;
@@ -209,7 +258,7 @@ public class EditorScreen extends Screen {
             case TEXT_COMPONENT -> {
                 String fname = field.name();
                 ButtonWidget btn = ButtonWidget.builder(
-                                Text.literal(fname + ": [edit]"),
+                                Text.literal(fname + ": [编辑]"),
                                 b -> openTextComponentEditor(fname))
                         .dimensions(x, y, w, 14).build();
                 addDrawableChild(btn);
@@ -228,14 +277,12 @@ public class EditorScreen extends Screen {
         }
         String id = "b" + (++blockCounter);
         EditorBlock block = new EditorBlock(id, schemaId, nextPlaceX, nextPlaceY);
-        // 应用默认字段值
         for (BlockField f : schema.fields()) {
             if (f.defaultValue() != null) {
                 block.fieldValues().put(f.name(), f.defaultValue());
             }
         }
         state.addBlock(block);
-        // 错开放置位置避免重叠
         nextPlaceX += 24;
         nextPlaceY += 24;
         if (nextPlaceX > 400) {
@@ -244,7 +291,7 @@ public class EditorScreen extends Screen {
         }
         selectedId = id;
         linkMode = false;
-        setStatus("Added " + schema.label());
+        setStatus("已添加: " + schema.label());
         clearAndInit();
     }
 
@@ -255,7 +302,7 @@ public class EditorScreen extends Screen {
         state.removeBlock(selectedId);
         selectedId = null;
         linkMode = false;
-        setStatus("Block deleted");
+        setStatus("积木已删除");
         clearAndInit();
     }
 
@@ -264,7 +311,7 @@ public class EditorScreen extends Screen {
             return;
         }
         linkMode = !linkMode;
-        setStatus(linkMode ? "Click a block to link as child" : "Link cancelled");
+        setStatus(linkMode ? "点击子块以连接" : "已取消连接");
         clearAndInit();
     }
 
@@ -284,8 +331,42 @@ public class EditorScreen extends Screen {
                 if (b != null) {
                     b.fieldValues().put(fieldName, json);
                 }
-                setStatus("Text component updated");
+                setStatus("文本组件已更新");
             }, this));
+        }
+    }
+
+    /** 切到 IDE 模式。 */
+    private void switchToIde() {
+        syncViewToState();
+        if (this.client != null) {
+            this.client.setScreen(new IdeEditorScreen(state));
+        }
+    }
+
+    /** 重载：调用 ReloadService。 */
+    private void doReload() {
+        syncViewToState();
+        ReloadResult r = ReloadService.reload(state, MinecraftClient.getInstance());
+        setStatus((r.success() ? "重载成功: " : "重载失败: ") + r.message());
+        if (!r.success()) {
+            // 显示编译错误
+            compilePreview = "§c重载失败§r\n" + r.message();
+            clearAndInit();
+        }
+    }
+
+    private void openManual() {
+        if (this.client != null) {
+            this.client.setScreen(new ManualScreen(this));
+        }
+    }
+
+    private void openSettings() {
+        if (this.client != null) {
+            this.client.setScreen(new KeyBindingsSettingsScreen(this,
+                    DatapackEditorClient.config(),
+                    DatapackEditorClient.configPath(this.client)));
         }
     }
 
@@ -294,8 +375,8 @@ public class EditorScreen extends Screen {
         CompileResult result = new BlockCompiler().compile(state, reg);
         StringBuilder sb = new StringBuilder();
         if (result.success()) {
-            sb.append("§aCompile OK§r\n");
-            sb.append("Functions: ").append(result.mcfunctions().size()).append('\n');
+            sb.append("§a编译成功§r\n");
+            sb.append("函数: ").append(result.mcfunctions().size()).append('\n');
             for (var e : result.mcfunctions().entrySet()) {
                 sb.append("  ").append(e.getKey()).append('\n');
                 for (String line : e.getValue().split("\n")) {
@@ -305,17 +386,17 @@ public class EditorScreen extends Screen {
                 }
             }
             if (!result.jsonFiles().isEmpty()) {
-                sb.append("JSON files: ").append(result.jsonFiles().size()).append('\n');
+                sb.append("JSON 文件: ").append(result.jsonFiles().size()).append('\n');
                 for (var e : result.jsonFiles().entrySet()) {
                     sb.append("  ").append(e.getKey()).append('\n');
                 }
             }
         } else {
-            sb.append("§cCompile FAILED§r\n");
-            sb.append(OfflineDatapackIo.formatErrors(result.errors()));
+            sb.append("§c编译失败§r\n");
+            sb.append(formatErrors(result.errors()));
         }
         compilePreview = sb.toString();
-        setStatus(result.success() ? "Compile OK" : "Compile failed");
+        setStatus(result.success() ? "编译成功" : "编译失败");
         clearAndInit();
     }
 
@@ -323,23 +404,23 @@ public class EditorScreen extends Screen {
         syncViewToState();
         try {
             Path target = OfflineDatapackIo.export(state, reg);
-            setStatus("Exported to " + target.getFileName());
+            setStatus("已导出: " + target.getFileName());
         } catch (IllegalStateException e) {
-            compilePreview = "§cExport failed§r\n" + e.getMessage();
-            setStatus("Export failed");
+            compilePreview = "§c导出失败§r\n" + e.getMessage();
+            setStatus("导出失败");
             clearAndInit();
         } catch (IOException e) {
-            setStatus("Export IO error: " + e.getMessage());
+            setStatus("导出 IO 错误: " + e.getMessage());
         }
     }
 
     private void saveAndApply() {
         syncViewToState();
         if (ClientNetworking.canSend()) {
-            ClientNetworking.send(new SaveApplyMessage(state.getActiveDatapackNamespace()));
-            setStatus("Sent save & apply to server");
+            // 通过 ReloadService 统一路由
+            ReloadResult r = ReloadService.reload(state, MinecraftClient.getInstance());
+            setStatus((r.success() ? "成功: " : "失败: ") + r.message());
         } else {
-            // 离线：导出 zip
             exportZip();
         }
     }
@@ -358,9 +439,7 @@ public class EditorScreen extends Screen {
     public void applySync(String json, long revision) {
         try {
             EditorState synced = EditorState.fromJson(json);
-            // 保留画布视图，仅替换 blocks
             this.state.setActiveDatapackNamespace(synced.getActiveDatapackNamespace());
-            // 清空并重建
             for (EditorBlock b : new ArrayList<>(this.state.getBlocks())) {
                 this.state.removeBlock(b.id());
             }
@@ -370,7 +449,7 @@ public class EditorScreen extends Screen {
             this.lastRevision = revision;
             this.selectedId = null;
             this.linkMode = false;
-            setStatus("Synced rev " + revision);
+            setStatus("已同步版本 " + revision);
             clearAndInit();
         } catch (Exception ignored) {
             // 忽略同步错误
@@ -382,58 +461,122 @@ public class EditorScreen extends Screen {
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         // 背景
-        context.fill(0, 0, this.width, this.height, 0xFF202020);
+        context.fill(0, 0, this.width, this.height, 0xFF1A1A1A);
         // 调色板背景
-        context.fill(0, TOP_BAR_H, PALETTE_W, this.height - BOTTOM_BAR_H, 0xFF2B2B2B);
+        if (paletteVisible) {
+            context.fill(0, TOP_BAR_H, PALETTE_W, this.height - BOTTOM_BAR_H, 0xFF252526);
+        }
         // 字段面板背景
-        context.fill(this.width - FIELD_PANEL_W, TOP_BAR_H, this.width, this.height - BOTTOM_BAR_H, 0xFF2B2B2B);
+        context.fill(this.width - FIELD_PANEL_W, TOP_BAR_H, this.width, this.height - BOTTOM_BAR_H, 0xFF252526);
         // 画布背景
-        context.fill(PALETTE_W, TOP_BAR_H, this.width - FIELD_PANEL_W, this.height - BOTTOM_BAR_H, 0xFF1A1A1A);
+        int canvasX0 = paletteVisible ? PALETTE_W : 0;
+        context.fill(canvasX0, TOP_BAR_H, this.width - FIELD_PANEL_W, this.height - BOTTOM_BAR_H, 0xFF1E1E1E);
 
         // 标题
-        context.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, 4, 0xFFFFFF);
+        context.drawTextWithShadow(this.textRenderer, this.title, 4, 4, 0xFFFFFF);
 
-        // 调色板分组标签
-        int py = TOP_BAR_H + 4;
-        for (BlockCategory cat : BlockCategory.values()) {
-            py += 4 + 14;
-            for (BlockSchema s : reg.byCategory(cat)) {
-                py += 15;
-            }
+        // 调色板（自绘）
+        if (paletteVisible) {
+            drawPalette(context, mouseX, mouseY);
         }
 
-        // 画布网格点（简单）
+        // 画布网格
         drawCanvasGrid(context);
-
         // 连线
         drawConnections(context);
-
         // 积木块
         for (EditorBlock block : state.getBlocks()) {
             drawBlock(context, block);
         }
 
-        // 字段面板内容
+        // 字段面板
         drawFieldPanel(context);
 
-        // 子组件（按钮/输入框）
+        // 子组件
         super.render(context, mouseX, mouseY, delta);
 
-        // 编译预览覆盖层
+        // 编译预览
         if (compilePreview != null) {
             drawCompilePreview(context);
         }
 
+        // 积木 tooltip（悬停）
+        drawBlockTooltip(context, mouseX, mouseY);
+
         // 状态消息
         drawStatus(context);
 
-        // 画布区域边界
-        context.drawBorder(PALETTE_W - 1, TOP_BAR_H - 1, this.width - FIELD_PANEL_W - PALETTE_W + 2,
-                this.height - BOTTOM_BAR_H - TOP_BAR_H + 2, 0xFF555555);
+        // 画布边界
+        context.drawBorder(canvasX0 - 1, TOP_BAR_H - 1, this.width - FIELD_PANEL_W - canvasX0 + 2,
+                this.height - BOTTOM_BAR_H - TOP_BAR_H + 2, 0xFF444444);
+
+        // 新手引导覆盖
+        if (onboarding != null) {
+            onboarding.render(context, mouseX, mouseY, this.width, this.height);
+        }
+    }
+
+    /** 渲染调色板（自绘可滚动+折叠）。 */
+    private void drawPalette(DrawContext context, int mouseX, int mouseY) {
+        int top = TOP_BAR_H + 2;
+        int bottom = this.height - BOTTOM_BAR_H;
+        int y = top - paletteScroll;
+        // 裁剪范围（简单：超出 bottom 不绘制）
+        for (PaletteRow row : paletteRows) {
+            int h = row.header ? PALETTE_HEADER_H : PALETTE_ROW_H;
+            int ry = y;
+            if (ry + h >= top && ry <= bottom) {
+                if (row.header) {
+                    boolean collapsed = collapsedCategories.contains(row.category);
+                    String prefix = collapsed ? "[+] " : "[-] ";
+                    String label = prefix + categoryLabel(row.category);
+                    // 头部背景
+                    context.fill(2, ry, PALETTE_W - 2, ry + h, 0xFF333333);
+                    context.drawTextWithShadow(this.textRenderer, Text.literal(label),
+                            4, ry + 3, 0xFFCCCCCC);
+                } else if (row.schema != null) {
+                    boolean hover = mouseX >= 2 && mouseX < PALETTE_W - 2
+                            && mouseY >= ry && mouseY < ry + h;
+                    int bg = hover ? 0xFF094771 : 0xFF2D2D2D;
+                    context.fill(4, ry, PALETTE_W - 4, ry + h, bg);
+                    // 颜色点
+                    int dot = parseColor(row.schema.color(), 0xFF888888);
+                    context.fill(6, ry + 3, 10, ry + 9, dot);
+                    String label = truncate(row.schema.label(), PALETTE_W - 18);
+                    context.drawTextWithShadow(this.textRenderer, Text.literal(label),
+                            12, ry + 2, 0xFFEEEEEE);
+                }
+            }
+            y += h;
+        }
+        // 滚动条
+        int totalH = totalPaletteHeight();
+        int visibleH = bottom - top;
+        if (totalH > visibleH) {
+            int barH = Math.max(20, visibleH * visibleH / totalH);
+            int barY = top + (int) ((long) paletteScroll * (visibleH - barH) / Math.max(1, totalH - visibleH));
+            context.fill(PALETTE_W - 4, barY, PALETTE_W - 2, barY + barH, 0xFF666666);
+        }
+    }
+
+    private int totalPaletteHeight() {
+        int h = 0;
+        for (PaletteRow row : paletteRows) {
+            h += row.header ? PALETTE_HEADER_H : PALETTE_ROW_H;
+        }
+        return h;
+    }
+
+    private static String categoryLabel(BlockCategory cat) {
+        return switch (cat) {
+            case EVENT -> "事件";
+            case CONDITION -> "条件";
+            case ACTION -> "动作";
+        };
     }
 
     private void drawCanvasGrid(DrawContext context) {
-        int x0 = PALETTE_W;
+        int x0 = paletteVisible ? PALETTE_W : 0;
         int x1 = this.width - FIELD_PANEL_W;
         int y0 = TOP_BAR_H;
         int y1 = this.height - BOTTOM_BAR_H;
@@ -461,7 +604,8 @@ public class EditorScreen extends Screen {
     }
 
     private int toScreenX(double wx) {
-        return (int) (wx * canvas.getZoom() + canvas.getPanX());
+        int origin = paletteVisible ? PALETTE_W : 0;
+        return (int) (wx * canvas.getZoom() + canvas.getPanX() + origin);
     }
 
     private int toScreenY(double wy) {
@@ -469,7 +613,8 @@ public class EditorScreen extends Screen {
     }
 
     private double toWorldX(double sx) {
-        return (sx - canvas.getPanX()) / canvas.getZoom();
+        int origin = paletteVisible ? PALETTE_W : 0;
+        return (sx - canvas.getPanX() - origin) / canvas.getZoom();
     }
 
     private double toWorldY(double sy) {
@@ -480,25 +625,18 @@ public class EditorScreen extends Screen {
         BlockSchema schema = reg.get(block.schemaId());
         int sx = toScreenX(block.x());
         int sy = toScreenY(block.y());
-        int sw = (int) (BLOCK_W * canvas.getZoom());
+        int sw = Math.max(BLOCK_W, (int) (BLOCK_W * canvas.getZoom()));
         int sh = (int) (blockHeight(schema) * canvas.getZoom());
-        if (sx + sw < PALETTE_W || sx > this.width - FIELD_PANEL_W
-                || sy + sh < TOP_BAR_H || sy > this.height - BOTTOM_BAR_H) {
-            // 部分裁剪判断（仍渲染可见部分）
-        }
         int fill = parseColor(schema == null ? "#888888" : schema.color(), 0xFF000000);
         context.fill(sx, sy, sx + sw, sy + sh, fill);
-        // 选中高亮边框
         if (block.id().equals(selectedId)) {
             context.drawBorder(sx - 1, sy - 1, sw + 2, sh + 2, 0xFFFFFFFF);
         } else {
             context.drawBorder(sx, sy, sw, sh, 0xFF000000);
         }
-        // 标签
         String label = schema == null ? block.schemaId() : schema.label();
-        context.drawTextWithShadow(this.textRenderer, Text.literal(truncate(label, sw - 4)),
-                sx + 3, sy + 2, 0xFFFFFF);
-        // 字段值
+        drawScaledText(context, Text.literal(truncate(label, sw - 4)),
+                sx + 3, sy + 2, 0xFFFFFF, fontScale);
         if (schema != null) {
             int lineY = sy + 14;
             for (BlockField f : schema.fields()) {
@@ -507,11 +645,78 @@ public class EditorScreen extends Screen {
                     v = f.defaultValue();
                 }
                 String vs = v == null ? "" : v.toString();
-                context.drawTextWithShadow(this.textRenderer,
+                drawScaledText(context,
                         Text.literal(truncate(f.name() + "=" + vs, sw - 4)),
-                        sx + 3, lineY, 0xDDDDDD);
+                        sx + 3, lineY, 0xDDDDDD, fontScale);
                 lineY += (int) (BLOCK_H_PER_FIELD * canvas.getZoom());
             }
+        }
+    }
+
+    /** 应用 fontScale 缩放绘制文本（基于矩阵）。 */
+    private void drawScaledText(DrawContext context, Text text, int x, int y, int color, float scale) {
+        if (text == null) {
+            return;
+        }
+        if (scale <= 0.0f) {
+            scale = 1.0f;
+        }
+        if (Math.abs(scale - 1.0f) < 0.001f) {
+            context.drawTextWithShadow(this.textRenderer, text, x, y, color);
+            return;
+        }
+        context.getMatrices().push();
+        context.getMatrices().translate(x, y, 0);
+        context.getMatrices().scale(scale, scale, 1.0f);
+        context.drawTextWithShadow(this.textRenderer, text, 0, 0, color);
+        context.getMatrices().pop();
+    }
+
+    /** 积木悬停 tooltip：显示 schema label + 字段中文说明。 */
+    private void drawBlockTooltip(DrawContext context, int mouseX, int mouseY) {
+        String hitId = hitBlock(mouseX, mouseY);
+        if (hitId == null) {
+            return;
+        }
+        EditorBlock b = state.getById(hitId);
+        if (b == null) {
+            return;
+        }
+        BlockSchema schema = reg.get(b.schemaId());
+        if (schema == null) {
+            return;
+        }
+        List<String> lines = new ArrayList<>();
+        lines.add(schema.label() + "  [" + schema.id() + "]");
+        for (BlockField f : schema.fields()) {
+            Object v = b.fieldValues().get(f.name());
+            if (v == null) {
+                v = f.defaultValue();
+            }
+            String vs = v == null ? "" : v.toString();
+            lines.add("  " + f.name() + " = " + truncate(vs, 160));
+            lines.add("    类型: " + f.type().name().toLowerCase());
+        }
+        if (!schema.acceptsChildrenCategories().isEmpty()) {
+            lines.add("可接子块: " + String.join(", ", schema.acceptsChildrenCategories()));
+        }
+        int w = 240;
+        int h = lines.size() * 11 + 8;
+        int tx = mouseX + 12;
+        int ty = mouseY + 12;
+        if (tx + w > this.width) {
+            tx = mouseX - w - 8;
+        }
+        if (ty + h > this.height) {
+            ty = mouseY - h - 8;
+        }
+        context.fill(tx, ty, tx + w, ty + h, 0xF8000000);
+        context.drawBorder(tx, ty, w, h, 0xFFCCCCCC);
+        int ly = ty + 4;
+        for (String line : lines) {
+            context.drawTextWithShadow(this.textRenderer,
+                    Text.literal(truncate(line, w - 8)), tx + 4, ly, 0xFFDDDDDD);
+            ly += 11;
         }
     }
 
@@ -526,13 +731,11 @@ public class EditorScreen extends Screen {
                 }
                 int cx = toScreenX(child.x()) + (int) (BLOCK_W * canvas.getZoom()) / 2;
                 int cy = toScreenY(child.y());
-                // 简单直线
                 drawLine(context, px, py, cx, cy, 0xFFCCCCCC);
             }
         }
     }
 
-    /** 用 fill 画 1px 线段（水平/垂直/对角近似）。 */
     private void drawLine(DrawContext context, int x1, int y1, int x2, int y2, int color) {
         int steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
         if (steps == 0) {
@@ -550,7 +753,7 @@ public class EditorScreen extends Screen {
         int x = this.width - FIELD_PANEL_W + 4;
         int y = TOP_BAR_H + 2;
         if (selectedId == null) {
-            context.drawTextWithShadow(this.textRenderer, Text.literal("No block selected"),
+            context.drawTextWithShadow(this.textRenderer, Text.literal("未选中积木"),
                     x, y + 14, 0xAAAAAA);
             return;
         }
@@ -563,23 +766,23 @@ public class EditorScreen extends Screen {
             context.drawTextWithShadow(this.textRenderer, Text.literal("ID: " + block.id()),
                     x, y, 0xFFAA00);
             context.drawTextWithShadow(this.textRenderer,
-                    Text.literal("Type: " + schema.id()), x, y + 12, 0xAAAAFF);
+                    Text.literal("类型: " + schema.id()), x, y + 12, 0xAAAAFF);
         }
         if (linkMode) {
             context.drawTextWithShadow(this.textRenderer,
-                    Text.literal("> Click a block to link").formatted(Formatting.YELLOW),
+                    Text.literal("> 点击积木以连接").formatted(Formatting.YELLOW),
                     x, this.height - BOTTOM_BAR_H - 14, 0xFFFF00);
         }
     }
 
     private void drawCompilePreview(DrawContext context) {
-        int pw = Math.min(420, this.width - 40);
-        int ph = Math.min(280, this.height - 80);
+        int pw = Math.min(440, this.width - 40);
+        int ph = Math.min(300, this.height - 80);
         int px = (this.width - pw) / 2;
         int py = (this.height - ph) / 2;
         context.fill(px, py, px + pw, py + ph, 0xE8000000);
         context.drawBorder(px, py, pw, ph, 0xFF888888);
-        context.drawTextWithShadow(this.textRenderer, Text.literal("Compile Preview"),
+        context.drawTextWithShadow(this.textRenderer, Text.literal("编译预览 / 错误"),
                 px + 6, py + 4, 0xFFFFFF);
         int lineY = py + 20;
         for (String line : compilePreview.split("\n")) {
@@ -607,24 +810,53 @@ public class EditorScreen extends Screen {
             statusMessage = null;
             return;
         }
+        int x = paletteVisible ? PALETTE_W + 4 : 4;
         context.drawTextWithShadow(this.textRenderer, Text.literal(statusMessage),
-                PALETTE_W + 4, this.height - 14, 0x55FF55);
+                x, this.height - 14, 0x55FF55);
     }
 
     // ---------- 鼠标交互 ----------
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        // 先让子组件处理（按钮/输入框）
+        // 新手引导优先
+        if (onboarding != null && onboarding.mouseClicked(mouseX, mouseY, this.width, this.height)) {
+            return true;
+        }
         if (super.mouseClicked(mouseX, mouseY, button)) {
             return true;
         }
+        // 调色板点击
+        if (paletteVisible && mouseX >= 0 && mouseX < PALETTE_W
+                && mouseY >= TOP_BAR_H && mouseY < this.height - BOTTOM_BAR_H) {
+            int top = TOP_BAR_H + 2;
+            int y = top - paletteScroll;
+            for (PaletteRow row : paletteRows) {
+                int h = row.header ? PALETTE_HEADER_H : PALETTE_ROW_H;
+                if (mouseY >= y && mouseY < y + h) {
+                    if (row.header) {
+                        if (collapsedCategories.contains(row.category)) {
+                            collapsedCategories.remove(row.category);
+                        } else {
+                            collapsedCategories.add(row.category);
+                        }
+                        rebuildPaletteRows();
+                    } else if (row.schema != null) {
+                        addBlock(row.schema.id());
+                    }
+                    return true;
+                }
+                y += h;
+            }
+            return false;
+        }
         // 仅画布区域
-        if (!inCanvas(mouseX, mouseY)) {
+        int canvasX0 = paletteVisible ? PALETTE_W : 0;
+        if (mouseX < canvasX0 || mouseX >= this.width - FIELD_PANEL_W
+                || mouseY < TOP_BAR_H || mouseY >= this.height - BOTTOM_BAR_H) {
             return false;
         }
         if (button == 1) {
-            // 右键开始平移
             panning = true;
             lastPanX = (int) mouseX;
             lastPanY = (int) mouseY;
@@ -633,12 +865,11 @@ public class EditorScreen extends Screen {
         if (button != 0) {
             return false;
         }
-        // 命中测试
         String hit = hitBlock(mouseX, mouseY);
         if (linkMode && hit != null && selectedId != null && !hit.equals(selectedId)) {
             state.connect(selectedId, hit);
             linkMode = false;
-            setStatus("Linked " + selectedId + " -> " + hit);
+            setStatus("已连接 " + selectedId + " -> " + hit);
             clearAndInit();
             return true;
         }
@@ -654,7 +885,6 @@ public class EditorScreen extends Screen {
             clearAndInit();
             return true;
         }
-        // 空白：取消选中
         if (selectedId != null || linkMode) {
             selectedId = null;
             linkMode = false;
@@ -693,6 +923,21 @@ public class EditorScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+        // 调色板滚动
+        if (paletteVisible && mouseX >= 0 && mouseX < PALETTE_W
+                && mouseY >= TOP_BAR_H && mouseY < this.height - BOTTOM_BAR_H) {
+            paletteScroll -= (int) (verticalAmount * PALETTE_ROW_H * 2);
+            int top = TOP_BAR_H + 2;
+            int visibleH = this.height - BOTTOM_BAR_H - top;
+            int totalH = totalPaletteHeight();
+            if (paletteScroll < 0) {
+                paletteScroll = 0;
+            }
+            if (paletteScroll > Math.max(0, totalH - visibleH)) {
+                paletteScroll = Math.max(0, totalH - visibleH);
+            }
+            return true;
+        }
         if (inCanvas(mouseX, mouseY)) {
             double factor = verticalAmount > 0 ? 1.1 : (verticalAmount < 0 ? 1.0 / 1.1 : 1.0);
             canvas.zoomBy(factor);
@@ -701,15 +946,39 @@ public class EditorScreen extends Screen {
         return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
     }
 
+    @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        UserConfig cfg = DatapackEditorClient.config();
+        if (cfg != null && cfg.keyBindings != null) {
+            if (keyCode == cfg.keyBindings.switchMode) {
+                switchToIde();
+                return true;
+            }
+            if (keyCode == cfg.keyBindings.reload) {
+                doReload();
+                return true;
+            }
+            if (keyCode == cfg.keyBindings.togglePalette) {
+                paletteVisible = !paletteVisible;
+                return true;
+            }
+            if (keyCode == cfg.keyBindings.help) {
+                openManual();
+                return true;
+            }
+        }
+        return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
     private boolean inCanvas(double x, double y) {
-        return x >= PALETTE_W && x < this.width - FIELD_PANEL_W
+        int canvasX0 = paletteVisible ? PALETTE_W : 0;
+        return x >= canvasX0 && x < this.width - FIELD_PANEL_W
                 && y >= TOP_BAR_H && y < this.height - BOTTOM_BAR_H;
     }
 
     private String hitBlock(double mouseX, double mouseY) {
         double wx = toWorldX(mouseX);
         double wy = toWorldY(mouseY);
-        // 倒序遍历（顶层优先）
         List<EditorBlock> list = new ArrayList<>(state.getBlocks());
         for (int i = list.size() - 1; i >= 0; i--) {
             EditorBlock b = list.get(i);
@@ -767,5 +1036,29 @@ public class EditorScreen extends Screen {
         } catch (NumberFormatException ignored) {
             return defaultArgb;
         }
+    }
+
+    /** 格式化校验错误列表（含 friendlyMessage 与修复建议）。 */
+    private static String formatErrors(List<ValidationError> errors) {
+        if (errors == null || errors.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (ValidationError e : errors) {
+            sb.append('[').append(e.blockId() == null ? "?" : e.blockId()).append(']');
+            if (e.field() != null && !e.field().isBlank()) {
+                sb.append(' ').append(e.field());
+            }
+            String msg = e.friendlyMessage();
+            if (msg == null || msg.isBlank()) {
+                msg = e.message();
+            }
+            sb.append(": ").append(msg);
+            if (e.fixSuggestion() != null && !e.fixSuggestion().isBlank()) {
+                sb.append("（建议: ").append(e.fixSuggestion()).append('）');
+            }
+            sb.append('\n');
+        }
+        return sb.toString().trim();
     }
 }

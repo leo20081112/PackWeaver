@@ -5,8 +5,10 @@ import com.dpe.common.protocol.ErrorMessage;
 import com.dpe.common.protocol.KeepAliveMessage;
 import com.dpe.common.protocol.Message;
 import com.dpe.common.protocol.SaveApplyMessage;
+import com.dpe.common.reload.ReloadResult;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -14,7 +16,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 /**
  * dpe:msg 通道监听器：解析客户端消息并分发到 {@link EditorSessionManager}。
  *
- * <p>处理 EditOpMessage（应用操作 + 广播同步）、SaveApplyMessage（编译保存 + 重载）、
+ * <p>处理 EditOpMessage（应用操作 + 广播同步）、SaveApplyMessage（编译保存 + 经 ReloadQueue 串行化重载）、
  * KeepAliveMessage（忽略）；非 Player 来源忽略。</p>
  */
 public final class DpePluginMessageListener implements PluginMessageListener {
@@ -58,21 +60,24 @@ public final class DpePluginMessageListener implements PluginMessageListener {
         // OpenEditorMessage / SyncStateMessage / ErrorMessage 来自服务端，客户端->服务端不应发送，忽略
     }
 
-    /** 处理保存应用：编译 -> 写文件 -> reloadData；回 ErrorMessage 或聊天成功提示。 */
+    /** 处理保存应用：经 {@link EditorSessionManager#reload} 走 ReloadQueue 串行化重载；
+     *  失败回 ErrorMessage（+聊天），成功回聊天提示并广播同步。 */
     private void handleSaveApply(Player player, SaveApplyMessage save) {
         String ns = save.datapackNamespace();
         if (ns == null || ns.isBlank()) {
             EditorSession session = manager.sessionOf(player);
             ns = session == null ? "dpe" : session.namespace();
         }
-        EditorSessionManager.CompileSaveResult result = manager.compileAndSave(plugin, ns);
-        if (result.success()) {
-            player.sendMessage(Component.text("数据包保存并重载成功: " + result.message(), NamedTextColor.GREEN));
-            // 同步最新状态给该 namespace 的所有编辑者
-            manager.broadcastSync(plugin, ns);
-        } else {
-            sendError(player, "compile_failed", result.message());
-        }
+        final String namespace = ns;
+        manager.reload(player, namespace).thenAccept(rr -> Bukkit.getScheduler().runTask(plugin, () -> {
+            if (rr.success()) {
+                player.sendMessage(Component.text(rr.message(), NamedTextColor.GREEN));
+                // 同步最新状态给该 namespace 的所有编辑者
+                manager.broadcastSync(plugin, namespace);
+            } else {
+                sendError(player, "compile_failed", rr.message());
+            }
+        }));
     }
 
     /** 发送 ErrorMessage（mod 通道）+ 聊天降级提示。 */

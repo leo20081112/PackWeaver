@@ -32,7 +32,9 @@ final class ChatMenu {
                 .append(clickable("[添加积木块]", "/dpe chat", NamedTextColor.GREEN)).append(Component.newline())
                 .append(clickable("[列出当前 blocks]", "/dpe list", NamedTextColor.YELLOW)).append(Component.newline())
                 .append(clickable("[编译预览]", "/dpe compile", NamedTextColor.LIGHT_PURPLE)).append(Component.newline())
-                .append(clickable("[保存并重载]", "/dpe reload", NamedTextColor.RED)).append(Component.newline())
+                .append(clickable("🔄 [重载]", "/dpe reload", NamedTextColor.RED)).append(Component.newline())
+                .append(clickable("📘 [手册]", "/dpe wiki", NamedTextColor.BLUE)).append(Component.newline())
+                .append(clickable("📋 [模板]", "/dpe template list", NamedTextColor.DARK_AQUA)).append(Component.newline())
                 .append(clickable("[帮助]", "/dpe help", NamedTextColor.GRAY));
     }
 

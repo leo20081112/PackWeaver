@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
-  "id": "in-game-datapack-editor",
+  "id": "packweaver",
   "version": "${version}",
-  "name": "In-Game Datapack Editor",
-  "description": "Edit and manage datapacks from inside the game.",
+  "name": "PackWeaver",
+  "description": "PackWeaver - In-Game Datapack Studio. Scratch-style block editor + VSCode-style IDE, autocomplete, text component editor, vanilla manual, templates, one-key reload.",
   "authors": [
-    "dpe"
+    "PackWeaver"
   ],
   "contact": {
-    "homepage": "https://github.com/dpe/in-game-datapack-editor",
-    "sources": "https://github.com/dpe/in-game-datapack-editor"
+    "homepage": "https://github.com/leo20081112/PackWeaver",
+    "sources": "https://github.com/leo20081112/PackWeaver"
   },
   "license": "MIT",
   "environment": "*",

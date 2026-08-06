@@ -28,12 +28,13 @@ public final class FunctionCompletionProvider implements CompletionProvider {
         if (dp != null) {
             for (McFunction fn : dp.functions()) {
                 String id = fn.id().toString();
-                result.add(new CompletionCandidate(id, id, "函数 " + id, "function"));
+                result.add(new CompletionCandidate(id, id,
+                        "函数：调用命名空间下的函数，如 function " + id, "function"));
             }
         }
         // minecraft 命名空间占位
         result.add(new CompletionCandidate("minecraft:", "minecraft:",
-                "minecraft 命名空间", "function"));
+                "命名空间：原版 minecraft 函数，如 function minecraft:internal/tick", "function"));
         return result;
     }
 }

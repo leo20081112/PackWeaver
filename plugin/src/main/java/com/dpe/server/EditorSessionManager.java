@@ -14,6 +14,9 @@ import com.dpe.common.model.ResourceLocation;
 import com.dpe.common.model.Tag;
 import com.dpe.common.protocol.EditOpMessage;
 import com.dpe.common.protocol.SyncStateMessage;
+import com.dpe.common.reload.ReloadQueue;
+import com.dpe.common.reload.ReloadRequest;
+import com.dpe.common.reload.ReloadResult;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.bukkit.Bukkit;
@@ -26,6 +29,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -38,12 +42,22 @@ public final class EditorSessionManager {
     public record CompileSaveResult(boolean success, String message) {
     }
 
+    /** 编译 + 导出的中间结果（用于 reload 串行化前段）。 */
+    private record CompileExport(boolean success, String message, int fileCount) {
+    }
+
+    private final JavaPlugin plugin;
     private final Map<String, EditorSession> sessions = new ConcurrentHashMap<>();
     private final Map<UUID, String> playerNamespace = new ConcurrentHashMap<>();
     private final BlockSchemaRegistry registry = BlockSchemaRegistry.DEFAULT;
     private final BlockCompiler compiler = new BlockCompiler();
+    /** 全局重载串行化队列（合并 200ms 窗口内的并发 reloadData）。 */
+    private final ReloadQueue reloadQueue = new ReloadQueue();
+    /** 记录已挂载 reloadData 调度的 future，确保合并窗口内只调度一次。 */
+    private final Map<CompletableFuture<ReloadResult>, Boolean> scheduledReloads = new ConcurrentHashMap<>();
 
-    public EditorSessionManager() {
+    public EditorSessionManager(JavaPlugin plugin) {
+        this.plugin = plugin;
     }
 
     public BlockSchemaRegistry registry() {
@@ -227,20 +241,35 @@ public final class EditorSessionManager {
     }
 
     /**
-     * 编译并保存数据包到世界 datapacks 目录，然后 reloadData。
+     * 同步编译并保存数据包到世界 datapacks 目录，然后立即 reloadData。
+     * 保留作为同步变体；新代码请用 {@link #reload(Player, String)} 走 ReloadQueue 串行化。
      * @return 成功时 success=true 且 message 为提示；失败时 success=false 且 message 为错误列表。
      */
     public CompileSaveResult compileAndSave(JavaPlugin plugin, String namespace) {
         String ns = safeNamespace(namespace);
         EditorSession session = getOrCreate(ns);
-        CompileResult result = compiler.compile(session.state(), registry);
+        CompileExport ce = compileAndExport(ns, session.state());
+        if (!ce.success()) {
+            return new CompileSaveResult(false, ce.message());
+        }
+        reloadDataSafe(plugin);
+        return new CompileSaveResult(true,
+                "数据包 " + ns + " 已保存并重载 (files=" + ce.fileCount() + ")");
+    }
+
+    /**
+     * 编译 + 导出（不重载）。供同步 {@link #compileAndSave} 与异步 {@link #reload} 复用。
+     */
+    private CompileExport compileAndExport(String namespace, EditorState state) {
+        String ns = safeNamespace(namespace);
+        CompileResult result = compiler.compile(state, registry);
         if (!result.success()) {
-            return new CompileSaveResult(false, DatapackCommandUtil.formatErrors(result.errors()));
+            return new CompileExport(false, DatapackCommandUtil.formatErrors(result.errors()), 0);
         }
         Datapack dp = buildDatapack(ns, result);
         List<World> worlds = Bukkit.getWorlds();
         if (worlds.isEmpty()) {
-            return new CompileSaveResult(false, "无可用世界目录");
+            return new CompileExport(false, "无可用世界目录", 0);
         }
         Path datapacksDir = worlds.get(0).getWorldFolder().toPath().resolve("datapacks");
         Path target = datapacksDir.resolve(ns);
@@ -248,12 +277,49 @@ public final class EditorSessionManager {
             DatapackExporter.exportToDir(dp, target);
         } catch (Exception e) {
             plugin.getLogger().warning("导出数据包失败: " + e.getMessage());
-            return new CompileSaveResult(false, "导出失败: " + e.getMessage());
+            return new CompileExport(false, "导出失败: " + e.getMessage(), 0);
         }
-        reloadDataSafe(plugin);
-        return new CompileSaveResult(true,
-                "数据包 " + ns + " 已保存并重载 (functions=" + dp.functions().size()
-                        + ", tags=" + dp.tags().size() + ")");
+        int fileCount = dp.functions().size() + dp.tags().size();
+        return new CompileExport(true, "数据包 " + ns + " 已导出 (files=" + fileCount + ")", fileCount);
+    }
+
+    /**
+     * 编译并保存后通过 {@link ReloadQueue} 串行化 reloadData。
+     * <p>编译与导出在调用线程（主线程）同步完成；reloadData 经队列合并 200ms 窗口内的并发请求为一次。
+     * 返回的 future 在合并窗口结束、reloadData 已调度到主线程时完成。</p>
+     */
+    public CompletableFuture<ReloadResult> reload(Player player, String namespace) {
+        String ns = safeNamespace(namespace);
+        EditorSession session = getOrCreate(ns);
+        // 编译 + 导出（主线程同步，访问 Bukkit 世界目录）
+        CompileExport ce = compileAndExport(ns, session.state());
+        if (!ce.success()) {
+            return CompletableFuture.completedFuture(
+                    new ReloadResult(false, ce.message(), 0L));
+        }
+        int fileCount = ce.fileCount();
+        ReloadRequest req = new ReloadRequest(
+                player == null ? null : player.getUniqueId().toString(), ns);
+        CompletableFuture<ReloadResult> future = reloadQueue.enqueue(req);
+        // 合并窗口内多个请求复用同一 future，仅调度一次 reloadData
+        if (scheduledReloads.putIfAbsent(future, Boolean.TRUE) == null) {
+            future.whenComplete((rr, ex) -> {
+                scheduledReloads.remove(future);
+                if (rr != null && rr.success()) {
+                    Bukkit.getScheduler().runTask(plugin, () -> reloadDataSafe(plugin));
+                }
+            });
+        }
+        // 转换为带文件数的提示结果
+        return future.thenApply(rr -> new ReloadResult(
+                rr.success(),
+                rr.success() ? "数据包已重载，共 " + fileCount + " 个文件更新" : rr.message(),
+                rr.reloadCount()));
+    }
+
+    /** 关闭重载队列，释放线程。应在插件 onDisable 调用。 */
+    public void shutdown() {
+        reloadQueue.shutdown();
     }
 
     /** 组装 Datapack 对象（mcfunctions + 解析 tag JSON）。 */

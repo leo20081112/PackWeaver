@@ -15,7 +15,7 @@ public final class DatapackEditorPlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        sessionManager = new EditorSessionManager();
+        sessionManager = new EditorSessionManager(this);
         messageListener = new DpePluginMessageListener(this, sessionManager);
 
         // 注册插件消息通道（出 + 入）
@@ -37,6 +37,14 @@ public final class DatapackEditorPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        // 关闭重载队列（释放线程）
+        try {
+            if (sessionManager != null) {
+                sessionManager.shutdown();
+            }
+        } catch (Exception ignored) {
+            // 关闭失败忽略
+        }
         // 注销通道（保存状态可在此扩展持久化）
         try {
             if (messageListener != null) {

@@ -18,19 +18,22 @@ import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
+import org.lwjgl.glfw.GLFW;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * VSCode 风格代码编辑器（Task 4）：
+ * VSCode 风格代码编辑器：
  * <ul>
  *   <li>左侧文件树 + 顶部多标签页头 + 中心编辑区（行号/语法高亮/光标）。</li>
- *   <li>顶部按钮：切到积木模式(M)/重载(R)/保存/关闭。</li>
+ *   <li>顶部按钮：切到积木(M)/重载(R)/保存/打开文件夹/新窗口/关闭。</li>
  *   <li>键入时调用 {@link CompletionService} 浮层补全，Tab/Enter 插入 insertText。</li>
- *   <li>编译失败时显示 ValidationError 的 friendlyMessage 并定位行号。</li>
+ *   <li>支持游戏内小窗化（{@link EditorWindow}）与脱离游戏的独立窗口（{@link DetachedEditorWindow}）。</li>
  * </ul>
  * 多行编辑自实现：每文件以 {@code List<StringBuilder>} 行表保存，charTyped/keyPressed 维护。
  */
@@ -80,11 +83,37 @@ public class IdeEditorScreen extends Screen {
     private String statusMessage = null;
     private long statusTime = 0;
 
+    /** 游戏内小窗状态。 */
+    private EditorWindow window;
+
     public IdeEditorScreen(EditorState state) {
         super(Text.literal("IDE 代码编辑器"));
         this.state = state == null ? new EditorState() : state;
         // 编译当前 state 得到初始文件集
         rebuildBuffersFromState();
+    }
+
+    // ---------- 窗口几何辅助 ----------
+
+    private int winX() {
+        return window == null || window.fullscreen ? 0 : window.x;
+    }
+
+    private int winYContent() {
+        return window == null || window.fullscreen ? 0 : window.y + EditorWindow.TITLE_H;
+    }
+
+    private int winW() {
+        return window == null || window.fullscreen ? this.width : window.width;
+    }
+
+    private int winHContent() {
+        int titleH = (window == null || window.fullscreen) ? 0 : EditorWindow.TITLE_H;
+        return (window == null || window.fullscreen ? this.height : window.height) - titleH;
+    }
+
+    private boolean isFullscreen() {
+        return window == null || window.fullscreen;
     }
 
     /** 编译当前 state 得到 mcfunctions/jsonFiles，写入 buffers。 */
@@ -175,24 +204,34 @@ public class IdeEditorScreen extends Screen {
 
     @Override
     protected void init() {
-        // 顶部按钮
+        if (window == null) {
+            window = EditorWindow.fromConfig(DatapackEditorClient.config(), this.width, this.height);
+        }
+        int ww = winW();
+        // 顶部按钮（相对窗口内容坐标）
         int bx = FILE_TREE_W + 4;
         addDrawableChild(ButtonWidget.builder(Text.literal("切到积木 (Ctrl+M)"), b -> switchToBlocks())
-                .dimensions(bx, 2, 120, 16).build());
-        bx += 124;
+                .dimensions(bx, 2, 116, 16).build());
+        bx += 120;
         addDrawableChild(ButtonWidget.builder(Text.literal("重载 (Ctrl+R)"), b -> doReload())
-                .dimensions(bx, 2, 80, 16).build());
-        bx += 84;
+                .dimensions(bx, 2, 78, 16).build());
+        bx += 82;
         addDrawableChild(ButtonWidget.builder(Text.literal("保存 (Ctrl+S)"), b -> doSave())
-                .dimensions(bx, 2, 80, 16).build());
-        bx += 84;
-        addDrawableChild(ButtonWidget.builder(Text.literal(showErrors ? "隐藏错误" : "显示错误"), b -> {
+                .dimensions(bx, 2, 78, 16).build());
+        bx += 82;
+        addDrawableChild(ButtonWidget.builder(Text.literal("显示错误"), b -> {
                     showErrors = !showErrors;
                     clearAndInit();
                 })
-                .dimensions(bx, 2, 80, 16).build());
+                .dimensions(bx, 2, 64, 16).build());
+        bx += 68;
+        addDrawableChild(ButtonWidget.builder(Text.literal("📂文件夹"), b -> openFolder())
+                .dimensions(bx, 2, 64, 16).build());
+        bx += 68;
+        addDrawableChild(ButtonWidget.builder(Text.literal("🪟新窗口"), b -> openDetached())
+                .dimensions(bx, 2, 64, 16).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("关闭"), b -> close())
-                .dimensions(this.width - 60, 2, 50, 16).build());
+                .dimensions(ww - 60, 2, 50, 16).build());
     }
 
     /** 切回积木模式：把当前文件解析回 EditorState。 */
@@ -205,6 +244,13 @@ public class IdeEditorScreen extends Screen {
 
     /** 把当前 buffers 解析回 EditorState（用 TextToBlocksParser）。 */
     private EditorState parseFilesToState() {
+        Map<String, String> files = collectFiles();
+        String ns = state.getActiveDatapackNamespace();
+        return new TextToBlocksParser().parse(ns, files);
+    }
+
+    /** 收集当前 buffers 为 路径->内容 map。 */
+    private Map<String, String> collectFiles() {
         Map<String, String> files = new LinkedHashMap<>();
         for (Map.Entry<String, List<StringBuilder>> e : buffers.entrySet()) {
             StringBuilder sb = new StringBuilder();
@@ -216,8 +262,23 @@ public class IdeEditorScreen extends Screen {
             }
             files.put(e.getKey(), sb.toString());
         }
-        String ns = state.getActiveDatapackNamespace();
-        return new TextToBlocksParser().parse(ns, files);
+        return files;
+    }
+
+    /** 用独立窗口回传的文件覆盖当前 buffers。 */
+    private void applyDetachedFiles(Map<String, String> newFiles) {
+        if (newFiles == null) {
+            return;
+        }
+        // 保留 fileKinds，按路径更新内容
+        for (Map.Entry<String, String> e : newFiles.entrySet()) {
+            List<StringBuilder> lines = toLines(e.getValue());
+            buffers.put(e.getKey(), lines);
+            if (!fileKinds.containsKey(e.getKey())) {
+                fileKinds.put(e.getKey(), e.getKey().endsWith(".json") ? "json" : "mcfunction");
+            }
+        }
+        clearAndInit();
     }
 
     /** 保存：把文件解析回 state。 */
@@ -253,6 +314,50 @@ public class IdeEditorScreen extends Screen {
         setStatus((r.success() ? "重载成功: " : "重载失败: ") + r.message());
     }
 
+    /** 打开当前命名空间的数据包文件夹（Task 3）。 */
+    private void openFolder() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        String ns = state.getActiveDatapackNamespace();
+        if (ns == null || ns.isBlank()) {
+            ns = "dpe";
+        }
+        Path dpDir = DatapackEditorClient.worldDatapacksDir(mc);
+        if (dpDir == null) {
+            setStatus("非单机世界，无法定位数据包目录");
+            return;
+        }
+        try {
+            Path folder = dpDir.resolve(ns);
+            Files.createDirectories(folder);
+            boolean ok = DatapackFolderOpener.open(folder);
+            setStatus(ok ? "已打开: " + folder : "打开失败: " + folder);
+        } catch (Exception e) {
+            setStatus("打开失败: " + e.getMessage());
+        }
+    }
+
+    /** 在独立 Swing 窗口打开当前文件集（Task 5）。 */
+    private void openDetached() {
+        String ns = state.getActiveDatapackNamespace();
+        if (ns == null || ns.isBlank()) {
+            ns = "dpe";
+        }
+        Map<String, String> files = collectFiles();
+        DetachedEditorWindow.create(ns, files, this::applyDetachedFiles);
+        DatapackEditorClient.config().detachedWindowOpen = true;
+        DatapackEditorClient.saveConfig();
+        setStatus("已在独立窗口打开（保存即同步回游戏）");
+    }
+
+    private void toggleFullscreen() {
+        if (window == null) {
+            return;
+        }
+        window.toggleFullscreen(this.width, this.height);
+        DatapackEditorClient.saveConfig();
+        clearAndInit();
+    }
+
     private void setStatus(String s) {
         statusMessage = s;
         statusTime = System.currentTimeMillis();
@@ -260,35 +365,56 @@ public class IdeEditorScreen extends Screen {
 
     // ---------- 渲染 ----------
 
+    /** 禁用默认半透明背景叠加（Task 1）。 */
+    @Override
+    public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
+        // 不绘制默认背景
+    }
+
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        // 背景
-        context.fill(0, 0, this.width, this.height, 0xFF1E1E1E);
-        // 文件树背景
-        context.fill(0, TOP_BAR_H, FILE_TREE_W, this.height - BOTTOM_BAR_H, 0xFF252526);
-        // 编辑区背景
-        context.fill(FILE_TREE_W, TOP_BAR_H + TAB_BAR_H, this.width, this.height - BOTTOM_BAR_H, 0xFF1E1E1E);
+        int ww = winW();
+        int wh = winHContent();
+        int wx = winX();
+        int wyc = winYContent();
+        int lmx = mouseX - wx;
+        int lmy = mouseY - wyc;
 
-        super.render(context, mouseX, mouseY, delta);
+        if (!isFullscreen()) {
+            context.fill(0, 0, this.width, this.height, 0x80000000);
+            context.enableScissor(wx, wyc, wx + ww, wyc + wh);
+        }
+
+        context.getMatrices().push();
+        context.getMatrices().translate(wx, wyc, 0);
+
+        // 背景
+        context.fill(0, 0, ww, wh, 0xFF1E1E1E);
+        // 文件树背景
+        context.fill(0, TOP_BAR_H, FILE_TREE_W, wh - BOTTOM_BAR_H, 0xFF252526);
+        // 编辑区背景
+        context.fill(FILE_TREE_W, TOP_BAR_H + TAB_BAR_H, ww, wh - BOTTOM_BAR_H, 0xFF1E1E1E);
+
+        super.render(context, lmx, lmy, delta);
 
         // 标题
         context.drawTextWithShadow(this.textRenderer, this.title, 4, 4, 0xFFFFFF);
 
         // 标签页头
-        drawTabBar(context, mouseX, mouseY);
+        drawTabBar(context, lmx, lmy);
         // 文件树
-        drawFileTree(context, mouseX, mouseY);
+        drawFileTree(context, lmx, lmy);
         // 编辑器
-        drawEditor(context, mouseX, mouseY);
+        drawEditor(context, lmx, lmy);
 
         // 错误面板
         if (showErrors && !errors.isEmpty()) {
-            drawErrorsPanel(context, mouseX, mouseY);
+            drawErrorsPanel(context, lmx, lmy);
         }
 
         // 补全浮层
         if (completionVisible && !completionCandidates.isEmpty()) {
-            drawCompletion(context, mouseX, mouseY);
+            drawCompletion(context, lmx, lmy);
         }
 
         // 状态栏
@@ -298,15 +424,41 @@ public class IdeEditorScreen extends Screen {
                 statusMessage = null;
             } else {
                 context.drawTextWithShadow(this.textRenderer, Text.literal(statusMessage),
-                        FILE_TREE_W + 4, this.height - 14, 0x55FF55);
+                        FILE_TREE_W + 4, wh - 14, 0x55FF55);
             }
         }
         // 行/列指示
         if (activeTab != null) {
             String pos = "行 " + (cursorLine + 1) + ", 列 " + (cursorCol + 1);
             context.drawTextWithShadow(this.textRenderer, Text.literal(pos),
-                    this.width - 100, this.height - 14, 0xAAAAAA);
+                    ww - 100, wh - 14, 0xAAAAAA);
         }
+
+        context.getMatrices().pop();
+
+        if (!isFullscreen()) {
+            context.disableScissor();
+            drawWindowTitleBar(context, mouseX, mouseY);
+        }
+    }
+
+    /** 绘制小窗标题栏（屏幕绝对坐标）。 */
+    private void drawWindowTitleBar(DrawContext context, int mouseX, int mouseY) {
+        int x = window.x;
+        int y = window.y;
+        int w = window.width;
+        int h = window.height;
+        context.fill(x, y, x + w, y + EditorWindow.TITLE_H, 0xFF2D2D2D);
+        context.drawTextWithShadow(this.textRenderer, this.title, x + 6, y + 4, 0xFFFFFF);
+        int fsX = x + w - 28;
+        int clX = x + w - 14;
+        boolean fsHover = mouseX >= fsX && mouseX < fsX + 13 && mouseY >= y + 1 && mouseY < y + 15;
+        boolean clHover = mouseX >= clX && mouseX < clX + 12 && mouseY >= y + 1 && mouseY < y + 15;
+        context.fill(fsX, y + 1, fsX + 13, y + 15, fsHover ? 0xFF555555 : 0xFF3A3A3A);
+        context.drawTextWithShadow(this.textRenderer, Text.literal("▢"), fsX + 3, y + 3, 0xFFCCCCCC);
+        context.fill(clX, y + 1, clX + 12, y + 15, clHover ? 0xFF884444 : 0xFF3A3A3A);
+        context.drawTextWithShadow(this.textRenderer, Text.literal("x"), clX + 3, y + 3, 0xFFCCCCCC);
+        context.drawBorder(x, y, w, h, 0xFF555555);
     }
 
     private void drawTabBar(DrawContext context, int mouseX, int mouseY) {
@@ -346,6 +498,8 @@ public class IdeEditorScreen extends Screen {
     }
 
     private void drawEditor(DrawContext context, int mouseX, int mouseY) {
+        int ww = winW();
+        int wh = winHContent();
         if (activeTab == null) {
             context.drawTextWithShadow(this.textRenderer,
                     Text.literal("请从左侧选择一个文件").formatted(Formatting.ITALIC),
@@ -359,8 +513,8 @@ public class IdeEditorScreen extends Screen {
         String kind = fileKinds.getOrDefault(activeTab, "mcfunction");
         int editorX = FILE_TREE_W;
         int editorY = TOP_BAR_H + TAB_BAR_H;
-        int editorW = this.width - editorX;
-        int editorH = this.height - BOTTOM_BAR_H - editorY;
+        int editorW = ww - editorX;
+        int editorH = wh - BOTTOM_BAR_H - editorY;
         int codeX = editorX + LINE_NUMBER_W + 4 - scrollX;
         int codeY = editorY - scrollY;
 
@@ -396,7 +550,7 @@ public class IdeEditorScreen extends Screen {
                     editorX + LINE_NUMBER_W - 4 - this.textRenderer.getWidth(numStr), ly + 1, numColor);
             // 行背景（错误行）
             if (errorLines.contains(i + 1)) {
-                context.fill(editorX + LINE_NUMBER_W + 1, ly, this.width, ly + LINE_H, 0x55FF0000);
+                context.fill(editorX + LINE_NUMBER_W + 1, ly, ww, ly + LINE_H, 0x55FF0000);
             }
             // 文本（按语法高亮）
             String line = lines.get(i).toString();
@@ -546,10 +700,12 @@ public class IdeEditorScreen extends Screen {
 
     /** 错误面板（右下角悬浮）。 */
     private void drawErrorsPanel(DrawContext context, int mouseX, int mouseY) {
-        int pw = Math.min(420, this.width - FILE_TREE_W - 20);
-        int ph = Math.min(160, this.height / 3);
-        int px = this.width - pw - 8;
-        int py = this.height - BOTTOM_BAR_H - ph - 4;
+        int ww = winW();
+        int wh = winHContent();
+        int pw = Math.min(420, ww - FILE_TREE_W - 20);
+        int ph = Math.min(160, wh / 3);
+        int px = ww - pw - 8;
+        int py = wh - BOTTOM_BAR_H - ph - 4;
         context.fill(px, py, px + pw, py + ph, 0xE8000000);
         context.drawBorder(px, py, pw, ph, 0xFFFF5555);
         context.drawTextWithShadow(this.textRenderer,
@@ -573,6 +729,8 @@ public class IdeEditorScreen extends Screen {
 
     /** 补全浮层：在光标下方显示候选。 */
     private void drawCompletion(DrawContext context, int mouseX, int mouseY) {
+        int ww = winW();
+        int wh = winHContent();
         if (activeTab == null || cursorLine < 0) {
             return;
         }
@@ -587,10 +745,10 @@ public class IdeEditorScreen extends Screen {
         int w = 240;
         int h = Math.min(80, completionCandidates.size() * 11 + 14);
         // 修正越界
-        if (cx + w > this.width) {
-            cx = this.width - w - 4;
+        if (cx + w > ww) {
+            cx = ww - w - 4;
         }
-        if (cy + h > this.height - BOTTOM_BAR_H) {
+        if (cy + h > wh - BOTTOM_BAR_H) {
             cy = TOP_BAR_H + TAB_BAR_H + cursorLine * LINE_H - scrollY - h;
         }
         context.fill(cx, cy, cx + w, cy + h, 0xF8000000);
@@ -656,6 +814,10 @@ public class IdeEditorScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (keyCode == GLFW.GLFW_KEY_F11) {
+            toggleFullscreen();
+            return true;
+        }
         // 补全优先：Tab / Enter 插入选中候选
         if (completionVisible && !completionCandidates.isEmpty()) {
             if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_TAB
@@ -888,20 +1050,43 @@ public class IdeEditorScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (super.mouseClicked(mouseX, mouseY, button)) {
+        int ww = winW();
+        int wh = winHContent();
+        // 标题栏按钮与小窗手势（绝对坐标）
+        if (button == 0 && !isFullscreen() && window != null) {
+            if (mouseY >= window.y && mouseY < window.y + EditorWindow.TITLE_H
+                    && mouseX >= window.x && mouseX < window.x + window.width) {
+                int fsX = window.x + window.width - 28;
+                int clX = window.x + window.width - 14;
+                if (mouseX >= fsX && mouseX < fsX + 13) {
+                    toggleFullscreen();
+                    return true;
+                }
+                if (mouseX >= clX && mouseX < clX + 12) {
+                    close();
+                    return true;
+                }
+            }
+            if (window.mouseClicked(mouseX, mouseY, button)) {
+                return true;
+            }
+        }
+        double lmx = mouseX - winX();
+        double lmy = mouseY - winYContent();
+        if (super.mouseClicked(lmx, lmy, button)) {
             return true;
         }
         if (button != 0) {
             return false;
         }
         // 标签页头点击
-        if (mouseY >= TOP_BAR_H && mouseY < TOP_BAR_H + TAB_BAR_H && mouseX >= FILE_TREE_W) {
+        if (lmy >= TOP_BAR_H && lmy < TOP_BAR_H + TAB_BAR_H && lmx >= FILE_TREE_W) {
             int x = FILE_TREE_W;
             for (String tab : openTabs) {
                 int w = this.textRenderer.getWidth(shortName(tab)) + 16;
-                if (mouseX >= x && mouseX < x + w) {
+                if (lmx >= x && lmx < x + w) {
                     // 关闭按钮 x 区
-                    if (mouseX >= x + w - 12) {
+                    if (lmx >= x + w - 12) {
                         closeTab(tab);
                     } else {
                         saveCursor();
@@ -914,10 +1099,10 @@ public class IdeEditorScreen extends Screen {
             }
         }
         // 文件树点击
-        if (mouseX >= 0 && mouseX < FILE_TREE_W && mouseY >= TOP_BAR_H && mouseY < this.height - BOTTOM_BAR_H) {
+        if (lmx >= 0 && lmx < FILE_TREE_W && lmy >= TOP_BAR_H && lmy < wh - BOTTOM_BAR_H) {
             int y = TOP_BAR_H + 4 + 12;
             for (String path : buffers.keySet()) {
-                if (mouseY >= y && mouseY < y + 12) {
+                if (lmy >= y && lmy < y + 12) {
                     saveCursor();
                     activeTab = path;
                     if (!openTabs.contains(path)) {
@@ -932,14 +1117,14 @@ public class IdeEditorScreen extends Screen {
         // 编辑器点击：定位光标
         int editorX = FILE_TREE_W + LINE_NUMBER_W + 4;
         int editorY = TOP_BAR_H + TAB_BAR_H;
-        if (mouseX >= editorX && mouseX < this.width && mouseY >= editorY && mouseY < this.height - BOTTOM_BAR_H) {
-            int line = (int) ((mouseY - editorY + scrollY) / LINE_H);
+        if (lmx >= editorX && lmx < ww && lmy >= editorY && lmy < wh - BOTTOM_BAR_H) {
+            int line = (int) ((lmy - editorY + scrollY) / LINE_H);
             List<StringBuilder> lines = activeTab == null ? null : buffers.get(activeTab);
             if (lines != null && line >= 0 && line < lines.size()) {
                 cursorLine = line;
                 String l = lines.get(line).toString();
                 // 用字符宽度估算列
-                int rel = (int) (mouseX - editorX + scrollX);
+                int rel = (int) (lmx - editorX + scrollX);
                 int col = 0;
                 int acc = 0;
                 while (col < l.length()) {
@@ -978,17 +1163,54 @@ public class IdeEditorScreen extends Screen {
     }
 
     @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
+        if (!isFullscreen() && window != null && window.mouseDragged(mouseX, mouseY, button, deltaX, deltaY)) {
+            if (window.resized) {
+                window.resized = false;
+                clearAndInit();
+            }
+            return true;
+        }
+        double lmx = mouseX - winX();
+        double lmy = mouseY - winYContent();
+        return super.mouseDragged(lmx, lmy, button, deltaX, deltaY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (!isFullscreen() && window != null && window.mouseReleased(mouseX, mouseY, button)) {
+            clearAndInit();
+            return true;
+        }
+        double lmx = mouseX - winX();
+        double lmy = mouseY - winYContent();
+        return super.mouseReleased(lmx, lmy, button);
+    }
+
+    @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+        double lmx = mouseX - winX();
+        double lmy = mouseY - winYContent();
+        int ww = winW();
+        int wh = winHContent();
         int editorX = FILE_TREE_W;
         int editorY = TOP_BAR_H + TAB_BAR_H;
-        if (mouseX >= editorX && mouseX < this.width && mouseY >= editorY && mouseY < this.height - BOTTOM_BAR_H) {
+        if (lmx >= editorX && lmx < ww && lmy >= editorY && lmy < wh - BOTTOM_BAR_H) {
             scrollY -= (int) (verticalAmount * LINE_H * 3);
             if (scrollY < 0) {
                 scrollY = 0;
             }
             return true;
         }
-        return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+        return super.mouseScrolled(lmx, lmy, horizontalAmount, verticalAmount);
+    }
+
+    @Override
+    public void resize(MinecraftClient client, int width, int height) {
+        if (window != null && !window.fullscreen) {
+            window.clampToScreen(width, height);
+        }
+        super.resize(client, width, height);
     }
 
     @Override
@@ -998,6 +1220,10 @@ public class IdeEditorScreen extends Screen {
 
     @Override
     public void close() {
+        if (window != null) {
+            window.applyToConfig(DatapackEditorClient.config());
+            DatapackEditorClient.saveConfig();
+        }
         if (this.client != null) {
             this.client.setScreen(null);
         }

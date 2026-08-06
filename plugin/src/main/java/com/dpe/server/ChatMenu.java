@@ -35,6 +35,7 @@ final class ChatMenu {
                 .append(clickable("🔄 [重载]", "/dpe reload", NamedTextColor.RED)).append(Component.newline())
                 .append(clickable("📘 [手册]", "/dpe wiki", NamedTextColor.BLUE)).append(Component.newline())
                 .append(clickable("📋 [模板]", "/dpe template list", NamedTextColor.DARK_AQUA)).append(Component.newline())
+                .append(clickable("📂 [文件夹]", "/dpe folder", NamedTextColor.DARK_GREEN)).append(Component.newline())
                 .append(clickable("[帮助]", "/dpe help", NamedTextColor.GRAY));
     }
 

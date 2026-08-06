@@ -20,6 +20,18 @@ public class UserConfig {
     public double fontSize = 1.0;
     /** 按键绑定。 */
     public KeyBindings keyBindings = KeyBindings.defaults();
+    /** 小窗模式：窗口 X 坐标（-1 表示居中）。 */
+    public int windowX = -1;
+    /** 小窗模式：窗口 Y 坐标（-1 表示居中）。 */
+    public int windowY = -1;
+    /** 小窗模式：窗口宽度（-1 表示默认 80% 屏宽）。 */
+    public int windowWidth = -1;
+    /** 小窗模式：窗口高度（-1 表示默认 80% 屏高）。 */
+    public int windowHeight = -1;
+    /** 是否全屏（true 时忽略 windowX/Y/width/height）。 */
+    public boolean fullscreen = false;
+    /** 是否曾在独立窗口打开（记录偏好）。 */
+    public boolean detachedWindowOpen = false;
 
     public UserConfig() {
     }

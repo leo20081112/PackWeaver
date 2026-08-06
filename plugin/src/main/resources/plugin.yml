@@ -8,7 +8,7 @@ commands:
   datapackeditor:
     description: Manage and edit datapacks in-game with PackWeaver.
     aliases: [dpe, packweaver, pw]
-    usage: /dpe [help|chat|add <schemaId>|list|compile|reload|wiki [keyword] [page]|template [list|<id>]|<namespace>]
+    usage: /dpe [help|chat|add <schemaId>|list|compile|reload|wiki [keyword] [page]|template [list|<id>]|folder [namespace]|<namespace>]
     permission: dpe.use
 permissions:
   dpe.use:

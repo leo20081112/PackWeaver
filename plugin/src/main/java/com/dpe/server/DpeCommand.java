@@ -2,6 +2,7 @@ package com.dpe.server;
 
 import com.dpe.common.block.BlockSchema;
 import com.dpe.common.block.BlockSchemaRegistry;
+import com.dpe.common.io.DatapackFolderLocator;
 import com.dpe.common.manual.BuiltinManual;
 import com.dpe.common.manual.ManualEntry;
 import com.dpe.common.manual.ManualSearcher;
@@ -24,6 +25,10 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.awt.Desktop;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -31,13 +36,13 @@ import java.util.List;
  * /datapackeditor (/dpe) 命令处理器。
  *
  * <p>子命令：无参 / help / chat / list / add &lt;schemaId&gt; / compile / reload /
- * wiki [关键词] [页] / template [list|&lt;id&gt;]；
+ * wiki [关键词] [页] / template [list|&lt;id&gt;] / folder [命名空间]；
  * 其它非子命令参数视为 namespace 并打开编辑器。</p>
  */
 public final class DpeCommand implements CommandExecutor, TabCompleter {
 
     private static final List<String> SUB_COMMANDS = List.of(
-            "chat", "add", "list", "reload", "compile", "wiki", "template", "help");
+            "chat", "add", "list", "reload", "compile", "wiki", "template", "folder", "help");
     private static final String DEFAULT_NAMESPACE = "dpe";
     private static final int WIKI_PAGE_SIZE = 8;
 
@@ -52,6 +57,11 @@ public final class DpeCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        // folder 子命令允许控制台执行（仅输出路径文本）
+        if (args.length > 0 && args[0].equalsIgnoreCase("folder")) {
+            handleFolder(sender, args);
+            return true;
+        }
         if (!(sender instanceof Player player)) {
             sender.sendMessage("该命令仅限玩家使用。");
             return true;
@@ -296,6 +306,58 @@ public final class DpeCommand implements CommandExecutor, TabCompleter {
         player.sendMessage(root);
     }
 
+    /**
+     * /dpe folder [namespace]：定位并尝试用系统文件管理器打开 datapacks 根目录或
+     * datapacks/&lt;ns&gt; 子目录；控制台仅输出路径文本。
+     */
+    private void handleFolder(CommandSender sender, String[] args) {
+        List<org.bukkit.World> worlds = Bukkit.getWorlds();
+        if (worlds.isEmpty()) {
+            sender.sendMessage(Component.text("无可用世界目录，无法定位 datapacks 文件夹。",
+                    NamedTextColor.RED));
+            return;
+        }
+        Path worldRoot = worlds.get(0).getWorldFolder().toPath();
+        String ns = (args.length >= 2 && !args[1].isBlank()) ? args[1] : null;
+        Path target;
+        try {
+            if (ns != null) {
+                target = DatapackFolderLocator.namespaceFolder(worldRoot, ns);
+            } else {
+                target = DatapackFolderLocator.datapacksRoot(worldRoot);
+            }
+        } catch (IOException e) {
+            sender.sendMessage(Component.text("无法定位/创建数据包目录：" + e.getMessage(),
+                    NamedTextColor.RED));
+            return;
+        }
+        String pathStr = target.toString();
+        if (!(sender instanceof Player)) {
+            // 控制台仅输出路径文本
+            sender.sendMessage(Component.text("数据包文件夹路径：" + pathStr, NamedTextColor.AQUA));
+            return;
+        }
+        boolean opened = false;
+        try {
+            if (Desktop.isDesktopSupported()) {
+                Desktop desktop = Desktop.getDesktop();
+                if (desktop.isSupported(Desktop.Action.OPEN)) {
+                    desktop.open(target.toFile());
+                    opened = true;
+                }
+            }
+        } catch (IOException | UnsupportedOperationException | SecurityException e) {
+            // HeadlessException 是 UnsupportedOperationException 子类，已被覆盖
+            opened = false;
+        }
+        if (opened) {
+            sender.sendMessage(Component.text("已打开数据包文件夹：" + pathStr, NamedTextColor.GREEN));
+        } else {
+            sender.sendMessage(Component.text("无法自动打开，数据包文件夹路径：" + pathStr,
+                    NamedTextColor.YELLOW));
+        }
+    }
+
     private void sendHelp(Player player) {
         player.sendMessage(Component.empty()
                 .append(Component.text("=== DPE 命令帮助 ===", NamedTextColor.GOLD))
@@ -316,7 +378,9 @@ public final class DpeCommand implements CommandExecutor, TabCompleter {
                 .append(Component.newline())
                 .append(Component.text("/dpe wiki [关键词] [页] - 查询手册", NamedTextColor.AQUA))
                 .append(Component.newline())
-                .append(Component.text("/dpe template [list|<id>] - 列出/加载模板", NamedTextColor.AQUA)));
+                .append(Component.text("/dpe template [list|<id>] - 列出/加载模板", NamedTextColor.AQUA))
+                .append(Component.newline())
+                .append(Component.text("/dpe folder [命名空间] - 打开数据包文件夹", NamedTextColor.AQUA)));
     }
 
     /** 获取玩家当前会话；无则加入默认命名空间会话。 */
@@ -378,6 +442,25 @@ public final class DpeCommand implements CommandExecutor, TabCompleter {
                         if (e.id().startsWith(prefix)) {
                             out.add(e.id());
                         }
+                    }
+                }
+                case "folder" -> {
+                    // 补全 datapacks 目录下子目录名 + 默认 "dpe"
+                    java.util.List<org.bukkit.World> worlds = Bukkit.getWorlds();
+                    if (!worlds.isEmpty()) {
+                        File datapacksDir = worlds.get(0).getWorldFolder()
+                                .toPath().resolve("datapacks").toFile();
+                        File[] children = datapacksDir.listFiles();
+                        if (children != null) {
+                            for (File c : children) {
+                                if (c.isDirectory() && c.getName().startsWith(prefix)) {
+                                    out.add(c.getName());
+                                }
+                            }
+                        }
+                    }
+                    if ("dpe".startsWith(prefix)) {
+                        out.add("dpe");
                     }
                 }
                 default -> {

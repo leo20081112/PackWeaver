@@ -20,8 +20,10 @@ import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
+import org.lwjgl.glfw.GLFW;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -33,7 +35,8 @@ import java.util.Set;
 /**
  * Scratch 风格积木编辑器主屏幕：
  * 左侧可滚动调色板（分类折叠）/ 画布（拖拽+缩放）/ 字段编辑 / 编译预览 / 导出 / 重载。
- * 顶部按钮：编译 / 切到 IDE(M) / 重载(R) / 手册 / 设置 / 帮助(F1) / 关闭。
+ * 顶部按钮：编译 / 切到 IDE(M) / 重载(R) / 打开文件夹 / 新窗口 / 手册 / 设置 / 关闭。
+ * 支持游戏内小窗化（{@link EditorWindow}）：非全屏时半透明遮罩 + 裁剪 + 标题栏拖拽/缩放，F11 切换全屏。
  */
 public class EditorScreen extends Screen {
 
@@ -86,6 +89,12 @@ public class EditorScreen extends Screen {
     /** 字体缩放倍率（来自 UserConfig.fontSize）。 */
     private float fontScale = 1.0f;
 
+    /** 游戏内小窗状态。 */
+    private EditorWindow window;
+    /** 积木模式无法脱离游戏的提示文案（带过期）。 */
+    private String detachedNotice = null;
+    private long detachedNoticeTime = 0;
+
     public EditorScreen(EditorState state) {
         super(Text.literal("Datapack Editor"));
         this.state = state == null ? new EditorState() : state;
@@ -93,9 +102,39 @@ public class EditorScreen extends Screen {
         this.canvas = new Canvas();
     }
 
+    // ---------- 窗口几何辅助 ----------
+
+    /** 窗口内容区左上角 X（屏幕绝对）。 */
+    private int winX() {
+        return window == null || window.fullscreen ? 0 : window.x;
+    }
+
+    /** 窗口内容区左上角 Y（屏幕绝对，含标题栏偏移）。 */
+    private int winYContent() {
+        return window == null || window.fullscreen ? 0 : window.y + EditorWindow.TITLE_H;
+    }
+
+    /** 窗口内容区宽度。 */
+    private int winW() {
+        return window == null || window.fullscreen ? this.width : window.width;
+    }
+
+    /** 窗口内容区高度（扣除标题栏）。 */
+    private int winHContent() {
+        int titleH = (window == null || window.fullscreen) ? 0 : EditorWindow.TITLE_H;
+        return (window == null || window.fullscreen ? this.height : window.height) - titleH;
+    }
+
+    private boolean isFullscreen() {
+        return window == null || window.fullscreen;
+    }
+
     @Override
     protected void init() {
         fieldTextFields.clear();
+        if (window == null) {
+            window = EditorWindow.fromConfig(DatapackEditorClient.config(), this.width, this.height);
+        }
 
         UserConfig cfg = DatapackEditorClient.config();
         // 应用字体缩放
@@ -108,34 +147,43 @@ public class EditorScreen extends Screen {
             onboarding = new OnboardingOverlay(this, cfg, configPath);
         }
 
-        // 顶部按钮
+        int ww = winW();
+        int wh = winHContent();
+
+        // 顶部按钮（相对窗口内容坐标）
         int topBtnX = PALETTE_W + 4;
         int bx = topBtnX;
         addDrawableChild(ButtonWidget.builder(Text.literal("编译"), b -> showCompilePreview())
-                .dimensions(bx, 2, 50, 16).build());
-        bx += 52;
+                .dimensions(bx, 2, 44, 16).build());
+        bx += 46;
         addDrawableChild(ButtonWidget.builder(Text.literal("切到IDE (M)"), b -> switchToIde())
-                .dimensions(bx, 2, 90, 16).build());
-        bx += 92;
+                .dimensions(bx, 2, 84, 16).build());
+        bx += 86;
         addDrawableChild(ButtonWidget.builder(Text.literal("重载 (R)"), b -> doReload())
-                .dimensions(bx, 2, 70, 16).build());
-        bx += 72;
+                .dimensions(bx, 2, 60, 16).build());
+        bx += 62;
         addDrawableChild(ButtonWidget.builder(Text.literal("导出Zip"), b -> exportZip())
-                .dimensions(bx, 2, 70, 16).build());
-        bx += 72;
+                .dimensions(bx, 2, 56, 16).build());
+        bx += 58;
         addDrawableChild(ButtonWidget.builder(Text.literal("保存应用"), b -> saveAndApply())
-                .dimensions(bx, 2, 70, 16).build());
-        bx += 72;
+                .dimensions(bx, 2, 60, 16).build());
+        bx += 62;
+        addDrawableChild(ButtonWidget.builder(Text.literal("📂文件夹"), b -> openFolder())
+                .dimensions(bx, 2, 64, 16).build());
+        bx += 66;
+        addDrawableChild(ButtonWidget.builder(Text.literal("🪟新窗口"), b -> openDetached())
+                .dimensions(bx, 2, 64, 16).build());
+        bx += 66;
         addDrawableChild(ButtonWidget.builder(Text.literal("手册"), b -> openManual())
-                .dimensions(bx, 2, 50, 16).build());
-        bx += 52;
+                .dimensions(bx, 2, 40, 16).build());
+        bx += 42;
         addDrawableChild(ButtonWidget.builder(Text.literal("设置"), b -> openSettings())
-                .dimensions(bx, 2, 50, 16).build());
+                .dimensions(bx, 2, 40, 16).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("关闭"), b -> close())
-                .dimensions(this.width - 50, 2, 46, 16).build());
+                .dimensions(ww - 50, 2, 46, 16).build());
 
         // 字段编辑区
-        int fx = this.width - FIELD_PANEL_W + 4;
+        int fx = ww - FIELD_PANEL_W + 4;
         int fw = FIELD_PANEL_W - 8;
         int fy = TOP_BAR_H + 4;
         if (selectedId == null) {
@@ -166,7 +214,7 @@ public class EditorScreen extends Screen {
                         compilePreview = null;
                         clearAndInit();
                     })
-                    .dimensions(this.width - 30, this.height - 30, 20, 20).build());
+                    .dimensions(ww - 30, wh - 30, 20, 20).build());
         }
 
         rebuildPaletteRows();
@@ -370,6 +418,44 @@ public class EditorScreen extends Screen {
         }
     }
 
+    /** 打开当前命名空间的数据包文件夹（Task 3）。 */
+    private void openFolder() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        String ns = state.getActiveDatapackNamespace();
+        if (ns == null || ns.isBlank()) {
+            ns = "dpe";
+        }
+        Path dpDir = DatapackEditorClient.worldDatapacksDir(mc);
+        if (dpDir == null) {
+            setStatus("非单机世界，无法定位数据包目录");
+            return;
+        }
+        try {
+            Path folder = dpDir.resolve(ns);
+            Files.createDirectories(folder);
+            boolean ok = DatapackFolderOpener.open(folder);
+            setStatus(ok ? "已打开: " + folder : "打开失败: " + folder);
+        } catch (Exception e) {
+            setStatus("打开失败: " + e.getMessage());
+        }
+    }
+
+    /** 积木模式无法脱离游戏渲染，仅提示（Task 5）。 */
+    private void openDetached() {
+        detachedNotice = "积木模式依赖游戏渲染，无法脱离游戏窗口；请切换到 IDE 文本模式（M）后使用独立窗口";
+        detachedNoticeTime = System.currentTimeMillis();
+        setStatus("积木模式不支持独立窗口，请切到 IDE");
+    }
+
+    private void toggleFullscreen() {
+        if (window == null) {
+            return;
+        }
+        window.toggleFullscreen(this.width, this.height);
+        DatapackEditorClient.saveConfig();
+        clearAndInit();
+    }
+
     private void showCompilePreview() {
         syncViewToState();
         CompileResult result = new BlockCompiler().compile(state, reg);
@@ -458,26 +544,48 @@ public class EditorScreen extends Screen {
 
     // ---------- 渲染 ----------
 
+    /** 禁用默认半透明背景叠加（Task 1）：super.render 会调用此方法，置空避免覆盖积木。 */
+    @Override
+    public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
+        // 不绘制默认背景（屏幕已有自己的不透明背景填充）
+    }
+
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+        int ww = winW();
+        int wh = winHContent();
+        int wx = winX();
+        int wyc = winYContent();
+        int lmx = mouseX - wx;
+        int lmy = mouseY - wyc;
+
+        if (!isFullscreen()) {
+            // 全屏半透明遮罩（小窗外背景）
+            context.fill(0, 0, this.width, this.height, 0x80000000);
+            context.enableScissor(wx, wyc, wx + ww, wyc + wh);
+        }
+
+        context.getMatrices().push();
+        context.getMatrices().translate(wx, wyc, 0);
+
         // 背景
-        context.fill(0, 0, this.width, this.height, 0xFF1A1A1A);
+        context.fill(0, 0, ww, wh, 0xFF1A1A1A);
         // 调色板背景
         if (paletteVisible) {
-            context.fill(0, TOP_BAR_H, PALETTE_W, this.height - BOTTOM_BAR_H, 0xFF252526);
+            context.fill(0, TOP_BAR_H, PALETTE_W, wh - BOTTOM_BAR_H, 0xFF252526);
         }
         // 字段面板背景
-        context.fill(this.width - FIELD_PANEL_W, TOP_BAR_H, this.width, this.height - BOTTOM_BAR_H, 0xFF252526);
+        context.fill(ww - FIELD_PANEL_W, TOP_BAR_H, ww, wh - BOTTOM_BAR_H, 0xFF252526);
         // 画布背景
         int canvasX0 = paletteVisible ? PALETTE_W : 0;
-        context.fill(canvasX0, TOP_BAR_H, this.width - FIELD_PANEL_W, this.height - BOTTOM_BAR_H, 0xFF1E1E1E);
+        context.fill(canvasX0, TOP_BAR_H, ww - FIELD_PANEL_W, wh - BOTTOM_BAR_H, 0xFF1E1E1E);
 
         // 标题
         context.drawTextWithShadow(this.textRenderer, this.title, 4, 4, 0xFFFFFF);
 
         // 调色板（自绘）
         if (paletteVisible) {
-            drawPalette(context, mouseX, mouseY);
+            drawPalette(context, lmx, lmy);
         }
 
         // 画布网格
@@ -492,8 +600,8 @@ public class EditorScreen extends Screen {
         // 字段面板
         drawFieldPanel(context);
 
-        // 子组件
-        super.render(context, mouseX, mouseY, delta);
+        // 子组件（按钮/文本框，已平移到窗口内）
+        super.render(context, lmx, lmy, delta);
 
         // 编译预览
         if (compilePreview != null) {
@@ -501,25 +609,80 @@ public class EditorScreen extends Screen {
         }
 
         // 积木 tooltip（悬停）
-        drawBlockTooltip(context, mouseX, mouseY);
+        drawBlockTooltip(context, lmx, lmy);
 
         // 状态消息
         drawStatus(context);
 
         // 画布边界
-        context.drawBorder(canvasX0 - 1, TOP_BAR_H - 1, this.width - FIELD_PANEL_W - canvasX0 + 2,
-                this.height - BOTTOM_BAR_H - TOP_BAR_H + 2, 0xFF444444);
+        context.drawBorder(canvasX0 - 1, TOP_BAR_H - 1, ww - FIELD_PANEL_W - canvasX0 + 2,
+                wh - BOTTOM_BAR_H - TOP_BAR_H + 2, 0xFF444444);
 
         // 新手引导覆盖
         if (onboarding != null) {
-            onboarding.render(context, mouseX, mouseY, this.width, this.height);
+            onboarding.render(context, lmx, lmy, ww, wh);
         }
+
+        // 积木模式无法脱离游戏的提示
+        if (detachedNotice != null) {
+            drawDetachedNotice(context, ww, wh);
+        }
+
+        context.getMatrices().pop();
+
+        if (!isFullscreen()) {
+            context.disableScissor();
+            drawWindowTitleBar(context, mouseX, mouseY);
+        }
+    }
+
+    /** 绘制小窗标题栏：背景 + 标题 + 全屏按钮 + 关闭按钮（屏幕绝对坐标）。 */
+    private void drawWindowTitleBar(DrawContext context, int mouseX, int mouseY) {
+        int x = window.x;
+        int y = window.y;
+        int w = window.width;
+        int h = window.height;
+        // 标题栏
+        context.fill(x, y, x + w, y + EditorWindow.TITLE_H, 0xFF2D2D2D);
+        context.drawTextWithShadow(this.textRenderer, this.title, x + 6, y + 4, 0xFFFFFF);
+        // 全屏按钮 / 关闭按钮
+        int fsX = x + w - 28;
+        int clX = x + w - 14;
+        boolean fsHover = mouseX >= fsX && mouseX < fsX + 13 && mouseY >= y + 1 && mouseY < y + 15;
+        boolean clHover = mouseX >= clX && mouseX < clX + 12 && mouseY >= y + 1 && mouseY < y + 15;
+        context.fill(fsX, y + 1, fsX + 13, y + 15, fsHover ? 0xFF555555 : 0xFF3A3A3A);
+        context.drawTextWithShadow(this.textRenderer, Text.literal("▢"), fsX + 3, y + 3, 0xFFCCCCCC);
+        context.fill(clX, y + 1, clX + 12, y + 15, clHover ? 0xFF884444 : 0xFF3A3A3A);
+        context.drawTextWithShadow(this.textRenderer, Text.literal("x"), clX + 3, y + 3, 0xFFCCCCCC);
+        // 窗口边框
+        context.drawBorder(x, y, w, h, 0xFF555555);
+    }
+
+    /** 积木模式脱离提示（屏幕中央）。 */
+    private void drawDetachedNotice(DrawContext context, int ww, int wh) {
+        long age = System.currentTimeMillis() - detachedNoticeTime;
+        if (age > 5000) {
+            detachedNotice = null;
+            return;
+        }
+        int w = Math.min(ww - 20, 360);
+        int lines = 2;
+        int h = 36;
+        int bx = (ww - w) / 2;
+        int by = (wh - h) / 2;
+        context.fill(bx, by, bx + w, by + h, 0xE8000000);
+        context.drawBorder(bx, by, w, h, 0xFFFFAA00);
+        context.drawTextWithShadow(this.textRenderer,
+                Text.literal("无法脱离游戏窗口").formatted(Formatting.RED), bx + 6, by + 4, 0xFFFFAA00);
+        // 第二行截断
+        String msg = truncate(detachedNotice, w - 12);
+        context.drawTextWithShadow(this.textRenderer, Text.literal(msg), bx + 6, by + 18, 0xFFEEEEEE);
     }
 
     /** 渲染调色板（自绘可滚动+折叠）。 */
     private void drawPalette(DrawContext context, int mouseX, int mouseY) {
         int top = TOP_BAR_H + 2;
-        int bottom = this.height - BOTTOM_BAR_H;
+        int bottom = winHContent() - BOTTOM_BAR_H;
         int y = top - paletteScroll;
         // 裁剪范围（简单：超出 bottom 不绘制）
         for (PaletteRow row : paletteRows) {
@@ -577,9 +740,9 @@ public class EditorScreen extends Screen {
 
     private void drawCanvasGrid(DrawContext context) {
         int x0 = paletteVisible ? PALETTE_W : 0;
-        int x1 = this.width - FIELD_PANEL_W;
+        int x1 = winW() - FIELD_PANEL_W;
         int y0 = TOP_BAR_H;
-        int y1 = this.height - BOTTOM_BAR_H;
+        int y1 = winHContent() - BOTTOM_BAR_H;
         double z = canvas.getZoom();
         int step = (int) Math.max(20, 40 * z);
         int panX = (int) canvas.getPanX();
@@ -704,10 +867,10 @@ public class EditorScreen extends Screen {
         int h = lines.size() * 11 + 8;
         int tx = mouseX + 12;
         int ty = mouseY + 12;
-        if (tx + w > this.width) {
+        if (tx + w > winW()) {
             tx = mouseX - w - 8;
         }
-        if (ty + h > this.height) {
+        if (ty + h > winHContent()) {
             ty = mouseY - h - 8;
         }
         context.fill(tx, ty, tx + w, ty + h, 0xF8000000);
@@ -750,7 +913,7 @@ public class EditorScreen extends Screen {
     }
 
     private void drawFieldPanel(DrawContext context) {
-        int x = this.width - FIELD_PANEL_W + 4;
+        int x = winW() - FIELD_PANEL_W + 4;
         int y = TOP_BAR_H + 2;
         if (selectedId == null) {
             context.drawTextWithShadow(this.textRenderer, Text.literal("未选中积木"),
@@ -771,15 +934,17 @@ public class EditorScreen extends Screen {
         if (linkMode) {
             context.drawTextWithShadow(this.textRenderer,
                     Text.literal("> 点击积木以连接").formatted(Formatting.YELLOW),
-                    x, this.height - BOTTOM_BAR_H - 14, 0xFFFF00);
+                    x, winHContent() - BOTTOM_BAR_H - 14, 0xFFFF00);
         }
     }
 
     private void drawCompilePreview(DrawContext context) {
-        int pw = Math.min(440, this.width - 40);
-        int ph = Math.min(300, this.height - 80);
-        int px = (this.width - pw) / 2;
-        int py = (this.height - ph) / 2;
+        int ww = winW();
+        int wh = winHContent();
+        int pw = Math.min(440, ww - 40);
+        int ph = Math.min(300, wh - 80);
+        int px = (ww - pw) / 2;
+        int py = (wh - ph) / 2;
         context.fill(px, py, px + pw, py + ph, 0xE8000000);
         context.drawBorder(px, py, pw, ph, 0xFF888888);
         context.drawTextWithShadow(this.textRenderer, Text.literal("编译预览 / 错误"),
@@ -812,28 +977,55 @@ public class EditorScreen extends Screen {
         }
         int x = paletteVisible ? PALETTE_W + 4 : 4;
         context.drawTextWithShadow(this.textRenderer, Text.literal(statusMessage),
-                x, this.height - 14, 0x55FF55);
+                x, winHContent() - 14, 0x55FF55);
     }
 
     // ---------- 鼠标交互 ----------
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        int ww = winW();
+        int wh = winHContent();
+        int wx = winX();
+        int wyc = winYContent();
+        double lmx = mouseX - wx;
+        double lmy = mouseY - wyc;
+
         // 新手引导优先
-        if (onboarding != null && onboarding.mouseClicked(mouseX, mouseY, this.width, this.height)) {
+        if (onboarding != null && onboarding.mouseClicked(lmx, lmy, ww, wh)) {
             return true;
         }
-        if (super.mouseClicked(mouseX, mouseY, button)) {
+        // 标题栏按钮与小窗手势（绝对坐标）
+        if (button == 0 && !isFullscreen() && window != null) {
+            if (mouseY >= window.y && mouseY < window.y + EditorWindow.TITLE_H
+                    && mouseX >= window.x && mouseX < window.x + window.width) {
+                int fsX = window.x + window.width - 28;
+                int clX = window.x + window.width - 14;
+                if (mouseX >= fsX && mouseX < fsX + 13) {
+                    toggleFullscreen();
+                    return true;
+                }
+                if (mouseX >= clX && mouseX < clX + 12) {
+                    close();
+                    return true;
+                }
+                // 其余标题栏区域交给窗口拖动
+            }
+            if (window.mouseClicked(mouseX, mouseY, button)) {
+                return true;
+            }
+        }
+        if (super.mouseClicked(lmx, lmy, button)) {
             return true;
         }
         // 调色板点击
-        if (paletteVisible && mouseX >= 0 && mouseX < PALETTE_W
-                && mouseY >= TOP_BAR_H && mouseY < this.height - BOTTOM_BAR_H) {
+        if (paletteVisible && lmx >= 0 && lmx < PALETTE_W
+                && lmy >= TOP_BAR_H && lmy < wh - BOTTOM_BAR_H) {
             int top = TOP_BAR_H + 2;
             int y = top - paletteScroll;
             for (PaletteRow row : paletteRows) {
                 int h = row.header ? PALETTE_HEADER_H : PALETTE_ROW_H;
-                if (mouseY >= y && mouseY < y + h) {
+                if (lmy >= y && lmy < y + h) {
                     if (row.header) {
                         if (collapsedCategories.contains(row.category)) {
                             collapsedCategories.remove(row.category);
@@ -852,8 +1044,8 @@ public class EditorScreen extends Screen {
         }
         // 仅画布区域
         int canvasX0 = paletteVisible ? PALETTE_W : 0;
-        if (mouseX < canvasX0 || mouseX >= this.width - FIELD_PANEL_W
-                || mouseY < TOP_BAR_H || mouseY >= this.height - BOTTOM_BAR_H) {
+        if (lmx < canvasX0 || lmx >= ww - FIELD_PANEL_W
+                || lmy < TOP_BAR_H || lmy >= wh - BOTTOM_BAR_H) {
             return false;
         }
         if (button == 1) {
@@ -865,7 +1057,7 @@ public class EditorScreen extends Screen {
         if (button != 0) {
             return false;
         }
-        String hit = hitBlock(mouseX, mouseY);
+        String hit = hitBlock(lmx, lmy);
         if (linkMode && hit != null && selectedId != null && !hit.equals(selectedId)) {
             state.connect(selectedId, hit);
             linkMode = false;
@@ -876,10 +1068,10 @@ public class EditorScreen extends Screen {
         if (hit != null) {
             selectedId = hit;
             EditorBlock b = state.getById(hit);
-            double wx = toWorldX(mouseX);
-            double wy = toWorldY(mouseY);
-            dragOffsetX = wx - (b == null ? 0 : b.x());
-            dragOffsetY = wy - (b == null ? 0 : b.y());
+            double wx2 = toWorldX(lmx);
+            double wy2 = toWorldY(lmy);
+            dragOffsetX = wx2 - (b == null ? 0 : b.x());
+            dragOffsetY = wy2 - (b == null ? 0 : b.y());
             draggingId = hit;
             linkMode = false;
             clearAndInit();
@@ -895,21 +1087,38 @@ public class EditorScreen extends Screen {
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
+        // 小窗拖拽/缩放优先（绝对坐标）
+        if (!isFullscreen() && window != null && window.mouseDragged(mouseX, mouseY, button, deltaX, deltaY)) {
+            if (window.resized) {
+                window.resized = false;
+                clearAndInit();
+            }
+            return true;
+        }
+        double lmx = mouseX - winX();
+        double lmy = mouseY - winYContent();
         if (panning) {
             canvas.panBy((int) deltaX, (int) deltaY);
             return true;
         }
         if (draggingId != null) {
-            double wx = toWorldX(mouseX) - dragOffsetX;
-            double wy = toWorldY(mouseY) - dragOffsetY;
+            double wx = toWorldX(lmx) - dragOffsetX;
+            double wy = toWorldY(lmy) - dragOffsetY;
             state.moveBlock(draggingId, wx, wy);
             return true;
         }
-        return super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+        return super.mouseDragged(lmx, lmy, button, deltaX, deltaY);
     }
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (!isFullscreen() && window != null && window.mouseReleased(mouseX, mouseY, button)) {
+            // 缩放结束后刷新布局，使按钮/面板跟随新尺寸
+            clearAndInit();
+            return true;
+        }
+        double lmx = mouseX - winX();
+        double lmy = mouseY - winYContent();
         if (panning) {
             panning = false;
             return true;
@@ -918,17 +1127,20 @@ public class EditorScreen extends Screen {
             draggingId = null;
             return true;
         }
-        return super.mouseReleased(mouseX, mouseY, button);
+        return super.mouseReleased(lmx, lmy, button);
     }
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+        double lmx = mouseX - winX();
+        double lmy = mouseY - winYContent();
+        int wh = winHContent();
         // 调色板滚动
-        if (paletteVisible && mouseX >= 0 && mouseX < PALETTE_W
-                && mouseY >= TOP_BAR_H && mouseY < this.height - BOTTOM_BAR_H) {
+        if (paletteVisible && lmx >= 0 && lmx < PALETTE_W
+                && lmy >= TOP_BAR_H && lmy < wh - BOTTOM_BAR_H) {
             paletteScroll -= (int) (verticalAmount * PALETTE_ROW_H * 2);
             int top = TOP_BAR_H + 2;
-            int visibleH = this.height - BOTTOM_BAR_H - top;
+            int visibleH = wh - BOTTOM_BAR_H - top;
             int totalH = totalPaletteHeight();
             if (paletteScroll < 0) {
                 paletteScroll = 0;
@@ -938,16 +1150,20 @@ public class EditorScreen extends Screen {
             }
             return true;
         }
-        if (inCanvas(mouseX, mouseY)) {
+        if (inCanvas(lmx, lmy)) {
             double factor = verticalAmount > 0 ? 1.1 : (verticalAmount < 0 ? 1.0 / 1.1 : 1.0);
             canvas.zoomBy(factor);
             return true;
         }
-        return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+        return super.mouseScrolled(lmx, lmy, horizontalAmount, verticalAmount);
     }
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (keyCode == GLFW.GLFW_KEY_F11) {
+            toggleFullscreen();
+            return true;
+        }
         UserConfig cfg = DatapackEditorClient.config();
         if (cfg != null && cfg.keyBindings != null) {
             if (keyCode == cfg.keyBindings.switchMode) {
@@ -970,10 +1186,18 @@ public class EditorScreen extends Screen {
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
+    @Override
+    public void resize(MinecraftClient client, int width, int height) {
+        if (window != null && !window.fullscreen) {
+            window.clampToScreen(width, height);
+        }
+        super.resize(client, width, height);
+    }
+
     private boolean inCanvas(double x, double y) {
         int canvasX0 = paletteVisible ? PALETTE_W : 0;
-        return x >= canvasX0 && x < this.width - FIELD_PANEL_W
-                && y >= TOP_BAR_H && y < this.height - BOTTOM_BAR_H;
+        return x >= canvasX0 && x < winW() - FIELD_PANEL_W
+                && y >= TOP_BAR_H && y < winHContent() - BOTTOM_BAR_H;
     }
 
     private String hitBlock(double mouseX, double mouseY) {
@@ -998,6 +1222,10 @@ public class EditorScreen extends Screen {
 
     @Override
     public void close() {
+        if (window != null) {
+            window.applyToConfig(DatapackEditorClient.config());
+            DatapackEditorClient.saveConfig();
+        }
         if (this.client != null) {
             this.client.setScreen(null);
         }

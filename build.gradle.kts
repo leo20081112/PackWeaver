@@ -2,7 +2,7 @@
 // No java plugin applied here; submodules apply their own plugins.
 allprojects {
     group = "com.dpe"
-    version = "0.1.0"
+    version = "0.3.0"
 }
 
 subprojects {

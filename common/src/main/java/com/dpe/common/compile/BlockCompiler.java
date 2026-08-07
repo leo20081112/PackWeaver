@@ -98,10 +98,18 @@ public final class BlockCompiler {
         }
     }
 
-    /** 编译动作块：tag_add 产出 JSON，其余产出命令行。 */
+    /** 编译动作块：raw_text 原样输出；tag_add 产出 JSON；其余产出命令行。 */
     private void compileAction(EditorBlock b, BlockSchema schema, BlockSchemaRegistry reg, String ns,
                                List<String> ifConditions, List<String> lines,
                                Map<ResourceLocation, String> jsonFiles) {
+        // raw_text：原样输出 text 字段行，不被 execute if 包装（往返无损）
+        if ("raw_text".equals(b.schemaId())) {
+            String text = strField(b, "text");
+            if (text != null) {
+                lines.add(text);
+            }
+            return;
+        }
         if ("tag".equals(schema.produces())) {
             compileTagAction(b, jsonFiles);
             return;

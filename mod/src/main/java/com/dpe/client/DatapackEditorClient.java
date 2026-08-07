@@ -2,18 +2,21 @@ package com.dpe.client;
 
 import com.dpe.common.block.EditorState;
 import com.dpe.common.config.UserConfig;
+import com.dpe.common.editor.DatapackExporter;
 import com.dpe.common.protocol.Message;
 import com.dpe.common.protocol.SyncStateMessage;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.util.WorldSavePath;
 import org.lwjgl.glfw.GLFW;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
@@ -62,9 +65,26 @@ public final class DatapackEditorClient implements ClientModInitializer {
                         || state.getActiveDatapackNamespace().isBlank()) {
                     state.setActiveDatapackNamespace(DEFAULT_NAMESPACE);
                 }
-                client.setScreen(new EditorScreen(state));
+                client.setScreen(openEditorSmart(state, client));
             }
         });
+    }
+
+    /**
+     * 智能选择编辑器入口（Task 10）：
+     * 单机且已存在 {@code dpe-<ns>} 真实数据包 → IDE（直接编辑真实文件，避免从空积木起步的漂移）；
+     * 否则 → 积木编辑器（默认创作模式）。
+     */
+    private static Screen openEditorSmart(EditorState state, MinecraftClient mc) {
+        String ns = state.getActiveDatapackNamespace();
+        if (ns == null || ns.isBlank()) {
+            ns = DEFAULT_NAMESPACE;
+            state.setActiveDatapackNamespace(ns);
+        }
+        if (realDatapackExists(ns, mc)) {
+            return new IdeEditorScreen(state);
+        }
+        return new EditorScreen(state);
     }
 
     /** 处理服务端消息。 */
@@ -133,6 +153,55 @@ public final class DatapackEditorClient implements ClientModInitializer {
         try {
             return server.getSavePath(WorldSavePath.DATAPACKS);
         } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 世界 datapacks 目录下是否已存在 {@code dpe-<ns>} 真实数据包（含 pack.mcmeta）。
+     * 用于智能 IDE 入口判断（Task 10）。
+     */
+    public static boolean realDatapackExists(String ns, MinecraftClient mc) {
+        if (ns == null || ns.isBlank()) {
+            ns = DEFAULT_NAMESPACE;
+        }
+        Path dpDir = worldDatapacksDir(mc);
+        if (dpDir == null) {
+            return false;
+        }
+        return Files.isRegularFile(dpDir.resolve("dpe-" + ns).resolve("pack.mcmeta"));
+    }
+
+    /**
+     * 在世界 datapacks 目录生成骨架数据包（Task 10）：
+     * {@code dpe-<ns>/pack.mcmeta} + {@code data/<ns>/functions/internal/tick.mcfunction}。
+     * 已存在则跳过对应文件（幂等），便于首次切到 IDE 时创建真实文件树。
+     * @return 生成的数据包目录；非单机或失败返回 null。
+     */
+    public static Path generateSkeleton(String ns, MinecraftClient mc) {
+        if (ns == null || ns.isBlank()) {
+            ns = DEFAULT_NAMESPACE;
+        }
+        Path dpDir = worldDatapacksDir(mc);
+        if (dpDir == null) {
+            return null;
+        }
+        try {
+            Path target = dpDir.resolve("dpe-" + ns);
+            Path mcmeta = target.resolve("pack.mcmeta");
+            if (!Files.exists(mcmeta)) {
+                Files.createDirectories(target);
+                String mcmetaJson = "{\"pack\":{\"pack_format\":" + DatapackExporter.PACK_FORMAT
+                        + ",\"description\":\"DPE skeleton (" + ns + ")\"}}";
+                Files.writeString(mcmeta, mcmetaJson);
+            }
+            Path tick = target.resolve("data/" + ns + "/functions/internal/tick.mcfunction");
+            if (!Files.exists(tick)) {
+                Files.createDirectories(tick.getParent());
+                Files.writeString(tick, "# 每刻触发\n# 在此添加命令\n");
+            }
+            return target;
+        } catch (Exception e) {
             return null;
         }
     }

@@ -84,6 +84,7 @@ public final class OfflineDatapackIo {
 
     /**
      * 编译编辑器状态并导出为 zip 到游戏目录 {@code dpe-<ns>.zip}。
+     * 作为非单机回退（无世界 datapacks 目录时）使用。
      * @return 导出的 zip 文件路径。
      * @throws IllegalStateException 编译失败时抛出，含校验错误信息。
      * @throws IOException           写入文件失败。
@@ -100,6 +101,31 @@ public final class OfflineDatapackIo {
         try (OutputStream out = Files.newOutputStream(target)) {
             DatapackExporter.exportToZip(dp, out);
         }
+        return target;
+    }
+
+    /**
+     * 编译编辑器状态并导出为解压目录到世界 datapacks 目录 {@code dpe-<ns>}（Task 4）。
+     * 用于单机持续编辑：直接落盘到 datapacks 目录，便于数据包重载识别与文件树扫描。
+     * @return 导出的数据包目录路径。
+     * @throws IllegalStateException 编译失败时抛出。
+     * @throws IOException           写入文件失败或非单机世界（worldDatapacksDir 为 null）。
+     */
+    public static Path exportToDatapacksDir(EditorState state, BlockSchemaRegistry reg,
+                                            MinecraftClient mc) throws IOException {
+        CompileResult result = new BlockCompiler().compile(state, reg);
+        if (!result.success()) {
+            throw new IllegalStateException("编译失败: " + formatErrors(result.errors()));
+        }
+        Datapack dp = buildDatapack(state.getActiveDatapackNamespace(), result);
+        String ns = state.getActiveDatapackNamespace();
+        Path worldDatapacks = DatapackEditorClient.worldDatapacksDir(mc);
+        if (worldDatapacks == null) {
+            throw new IOException("非单机世界，无法定位 datapacks 目录");
+        }
+        Files.createDirectories(worldDatapacks);
+        Path target = worldDatapacks.resolve("dpe-" + ns);
+        DatapackExporter.exportToDir(dp, target);
         return target;
     }
 

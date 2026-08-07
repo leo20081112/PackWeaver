@@ -96,4 +96,45 @@ class BlockCompilerTest {
         assertNotNull(json);
         assertTrue(json.contains("dp:helper"), "tag JSON 应含 entry，实际: " + json);
     }
+
+    @Test
+    void rawTextBlockCompilesToOriginalLine() {
+        EditorState state = new EditorState("dp");
+        EditorBlock tick = new EditorBlock("b1", "event.tick", 0, 0);
+        // raw_text 保留原文本（含注释行）
+        EditorBlock raw = new EditorBlock("b2", "raw_text", 0, 0,
+                Map.of("text", "# this is a comment"), List.of());
+        state.addBlock(tick);
+        state.addBlock(raw);
+        state.connect("b1", "b2");
+
+        CompileResult result = new BlockCompiler().compile(state, BlockSchemaRegistry.DEFAULT);
+        assertTrue(result.success(), "raw_text 应编译成功: " + result.errors());
+        String content = result.mcfunctions().values().iterator().next();
+        assertTrue(content.contains("# this is a comment"),
+                "raw_text 应原样输出原文行，实际: " + content);
+    }
+
+    @Test
+    void rawTextNotWrappedByExecuteIf() {
+        // raw_text 即使作为条件子块也不应被 execute if 包装
+        EditorState state = new EditorState("dp");
+        EditorBlock tick = new EditorBlock("b1", "event.tick", 0, 0);
+        EditorBlock cond = new EditorBlock("b2", "condition.score_compare", 0, 0,
+                Map.of("objective", "obj", "target", "@p", "op", "\u2265", "value", 5), List.of());
+        EditorBlock raw = new EditorBlock("b3", "raw_text", 0, 0,
+                Map.of("text", "weather rain"), List.of());
+        state.addBlock(tick);
+        state.addBlock(cond);
+        state.addBlock(raw);
+        state.connect("b1", "b2");
+        state.connect("b2", "b3");
+
+        CompileResult result = new BlockCompiler().compile(state, BlockSchemaRegistry.DEFAULT);
+        assertTrue(result.success());
+        String content = result.mcfunctions().values().iterator().next();
+        assertTrue(content.contains("weather rain"), "应包含 raw_text 原文");
+        assertFalse(content.contains("execute if") && content.contains("run weather rain"),
+                "raw_text 不应被 execute if 包装，实际: " + content);
+    }
 }

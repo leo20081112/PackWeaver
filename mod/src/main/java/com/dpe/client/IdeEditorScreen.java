@@ -8,6 +8,10 @@ import com.dpe.common.complete.CompletionService;
 import com.dpe.common.compile.BlockCompiler;
 import com.dpe.common.compile.CompileResult;
 import com.dpe.common.compile.ValidationError;
+import com.dpe.common.filetree.DatapackFileIo;
+import com.dpe.common.filetree.DatapackScanner;
+import com.dpe.common.filetree.FileNode;
+import com.dpe.common.filetree.FileTree;
 import com.dpe.common.model.Datapack;
 import com.dpe.common.model.ResourceLocation;
 import com.dpe.common.parse.TextToBlocksParser;
@@ -16,6 +20,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import org.lwjgl.glfw.GLFW;
@@ -63,6 +68,8 @@ public class IdeEditorScreen extends Screen {
     private final Map<String, int[]> cursors = new LinkedHashMap<>();
     /** 每标签滚动 {x, y}。 */
     private final Map<String, int[]> scrolls = new LinkedHashMap<>();
+    /** 标签路径 -> 对应的磁盘 FileNode（虚拟缓冲无节点，保存时跳过磁盘写入）。 */
+    private final Map<String, FileNode> tabNodes = new LinkedHashMap<>();
 
     private int scrollX = 0;
     private int scrollY = 0;
@@ -86,10 +93,29 @@ public class IdeEditorScreen extends Screen {
     /** 游戏内小窗状态。 */
     private EditorWindow window;
 
+    /** 真实文件树（扫描 worldDatapacksDir）；非单机为 null。 */
+    private FileTree fileTree = null;
+    /** 文件树渲染行缓存（drawFileTree 构建，mouseClicked 复用）。 */
+    private final List<TreeDisplayRow> treeRows = new ArrayList<>();
+    /** 折叠的目录路径集合。 */
+    private final java.util.Set<String> collapsedDirs = new java.util.HashSet<>();
+    /** 文件树选中的节点（用于新建/重命名/删除操作的目标）。 */
+    private FileNode selectedTreeNode = null;
+    /** 新建/重命名名称输入框。 */
+    private TextFieldWidget nameField = null;
+    /** 文件树垂直滚动偏移。 */
+    private int treeScroll = 0;
+    /** 文件树单行高度。 */
+    private static final int TREE_ROW_H = 12;
+
+    /** 文件树渲染行：节点 + 缩进深度 + 屏幕行号。 */
+    private record TreeDisplayRow(FileNode node, int depth, int y) {
+    }
+
     public IdeEditorScreen(EditorState state) {
         super(Text.literal("IDE 代码编辑器"));
         this.state = state == null ? new EditorState() : state;
-        // 编译当前 state 得到初始文件集
+        // 编译当前 state 得到初始（虚拟）文件集，作为无真实文件树时的回退
         rebuildBuffersFromState();
     }
 
@@ -208,6 +234,9 @@ public class IdeEditorScreen extends Screen {
             window = EditorWindow.fromConfig(DatapackEditorClient.config(), this.width, this.height);
         }
         int ww = winW();
+        int wh = winHContent();
+        // 扫描真实文件树（Task 6）
+        refreshFileTree();
         // 顶部按钮（相对窗口内容坐标）
         int bx = FILE_TREE_W + 4;
         addDrawableChild(ButtonWidget.builder(Text.literal("切到积木 (Ctrl+M)"), b -> switchToBlocks())
@@ -232,17 +261,286 @@ public class IdeEditorScreen extends Screen {
                 .dimensions(bx, 2, 64, 16).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("关闭"), b -> close())
                 .dimensions(ww - 60, 2, 50, 16).build());
+
+        // 文件树底部操作栏：名称输入 + 新建文件/目录/重命名/删除（Task 6）
+        int opsY = wh - BOTTOM_BAR_H - 16;
+        nameField = new TextFieldWidget(this.textRenderer, 2, opsY, FILE_TREE_W - 4, 12, Text.literal("名称"));
+        nameField.setMaxLength(128);
+        nameField.setPlaceholder(Text.literal("名称..."));
+        addDrawableChild(nameField);
+        int obx = 2;
+        int oby = opsY + 13;
+        int halfW = (FILE_TREE_W - 6) / 2;
+        addDrawableChild(ButtonWidget.builder(Text.literal("+文件"), b -> createFileFromField())
+                .dimensions(obx, oby, halfW, 12).build());
+        addDrawableChild(ButtonWidget.builder(Text.literal("+目录"), b -> createDirFromField())
+                .dimensions(obx + halfW + 2, oby, halfW, 12).build());
+        int oby2 = oby + 13;
+        addDrawableChild(ButtonWidget.builder(Text.literal("重命名"), b -> renameFromField())
+                .dimensions(obx, oby2, halfW, 12).build());
+        addDrawableChild(ButtonWidget.builder(Text.literal("删除"), b -> deleteSelectedNode())
+                .dimensions(obx + halfW + 2, oby2, halfW, 12).build());
     }
 
-    /** 切回积木模式：把当前文件解析回 EditorState。 */
-    private void switchToBlocks() {
-        EditorState newState = parseFilesToState();
-        if (this.client != null) {
-            this.client.setScreen(new EditorScreen(newState));
+    /** 重新扫描 worldDatapacksDir 刷新文件树缓存（Task 6）。 */
+    private void refreshFileTree() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        Path dpDir = DatapackEditorClient.worldDatapacksDir(mc);
+        if (dpDir != null) {
+            try {
+                fileTree = DatapackScanner.scan(dpDir);
+            } catch (Exception e) {
+                fileTree = null;
+            }
+        } else {
+            fileTree = null;
         }
     }
 
-    /** 把当前 buffers 解析回 EditorState（用 TextToBlocksParser）。 */
+    /** 把当前激活缓冲写回磁盘（若有真实 FileNode）。 */
+    private void saveActiveBufferToDisk() {
+        if (activeTab == null) {
+            return;
+        }
+        FileNode node = tabNodes.get(activeTab);
+        if (node == null) {
+            return; // 虚拟缓冲，无磁盘节点
+        }
+        MinecraftClient mc = MinecraftClient.getInstance();
+        Path dpDir = DatapackEditorClient.worldDatapacksDir(mc);
+        if (dpDir == null) {
+            return;
+        }
+        String content = joinBuffer(buffers.get(activeTab));
+        try {
+            DatapackFileIo.write(dpDir, node, content);
+        } catch (Exception e) {
+            setStatus("写盘失败: " + e.getMessage());
+        }
+    }
+
+    /** 拼接缓冲为字符串。 */
+    private static String joinBuffer(List<StringBuilder> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < lines.size(); i++) {
+            if (i > 0) {
+                sb.append('\n');
+            }
+            sb.append(lines.get(i));
+        }
+        return sb.toString();
+    }
+
+    /** 打开一个真实文件节点：读入缓冲、加标签、记录节点（Task 6）。 */
+    private void openFileNode(FileNode node) {
+        if (node == null || node.isDirectory()) {
+            return;
+        }
+        MinecraftClient mc = MinecraftClient.getInstance();
+        Path dpDir = DatapackEditorClient.worldDatapacksDir(mc);
+        if (dpDir == null) {
+            setStatus("非单机世界，无法读取文件");
+            return;
+        }
+        String content;
+        try {
+            content = DatapackFileIo.read(dpDir, node);
+        } catch (Exception e) {
+            setStatus("读取失败: " + e.getMessage());
+            return;
+        }
+        String path = node.path();
+        buffers.put(path, toLines(content));
+        fileKinds.put(path, path.endsWith(".json") ? "json" : "mcfunction");
+        tabNodes.put(path, node);
+        saveCursor();
+        activeTab = path;
+        if (!openTabs.contains(path)) {
+            openTabs.add(path);
+        }
+        restoreCursor();
+        setStatus("已打开: " + node.name());
+    }
+
+    /** 在选中节点（或其所属数据包根）下新建文件（Task 6）。 */
+    private void createFileFromField() {
+        createNodeFromField(false);
+    }
+
+    /** 在选中节点下新建目录（Task 6）。 */
+    private void createDirFromField() {
+        createNodeFromField(true);
+    }
+
+    private void createNodeFromField(boolean directory) {
+        String name = nameField == null ? "" : nameField.getText();
+        if (name == null || name.isBlank()) {
+            setStatus("请先在名称框输入名称");
+            return;
+        }
+        FileNode parent = resolveParentDir();
+        if (parent == null) {
+            setStatus("无可用父目录（非单机或无数据包）");
+            return;
+        }
+        MinecraftClient mc = MinecraftClient.getInstance();
+        Path dpDir = DatapackEditorClient.worldDatapacksDir(mc);
+        try {
+            FileNode created = directory
+                    ? DatapackFileIo.createDirectory(dpDir, parent, name)
+                    : DatapackFileIo.createFile(dpDir, parent, name);
+            refreshFileTree();
+            setStatus("已创建: " + created.name());
+            clearAndInit();
+        } catch (Exception e) {
+            setStatus("创建失败: " + e.getMessage());
+        }
+    }
+
+    /** 重命名选中节点（Task 6）。 */
+    private void renameFromField() {
+        String name = nameField == null ? "" : nameField.getText();
+        if (name == null || name.isBlank()) {
+            setStatus("请先在名称框输入新名称");
+            return;
+        }
+        FileNode node = selectedTreeNode;
+        if (node == null) {
+            setStatus("请先在文件树选中一个节点");
+            return;
+        }
+        MinecraftClient mc = MinecraftClient.getInstance();
+        Path dpDir = DatapackEditorClient.worldDatapacksDir(mc);
+        try {
+            DatapackFileIo.rename(dpDir, node, name);
+            // 更新缓冲键与节点引用
+            String oldPath = node.path();
+            refreshFileTree();
+            // 旧缓冲路径已失效，移除标签
+            if (openTabs.remove(oldPath) || activeTab != null && activeTab.equals(oldPath)) {
+                tabNodes.remove(oldPath);
+                buffers.remove(oldPath);
+                fileKinds.remove(oldPath);
+                cursors.remove(oldPath);
+                scrolls.remove(oldPath);
+                if (activeTab != null && activeTab.equals(oldPath)) {
+                    activeTab = openTabs.isEmpty() ? null : openTabs.get(openTabs.size() - 1);
+                    restoreCursor();
+                }
+            }
+            setStatus("已重命名为: " + name);
+            clearAndInit();
+        } catch (Exception e) {
+            setStatus("重命名失败: " + e.getMessage());
+        }
+    }
+
+    /** 删除选中节点（Task 6）。 */
+    private void deleteSelectedNode() {
+        FileNode node = selectedTreeNode;
+        if (node == null) {
+            setStatus("请先在文件树选中一个节点");
+            return;
+        }
+        MinecraftClient mc = MinecraftClient.getInstance();
+        Path dpDir = DatapackEditorClient.worldDatapacksDir(mc);
+        try {
+            DatapackFileIo.delete(dpDir, node);
+            String oldPath = node.path();
+            refreshFileTree();
+            // 关闭对应标签
+            if (openTabs.remove(oldPath) || activeTab != null && activeTab.equals(oldPath)) {
+                tabNodes.remove(oldPath);
+                buffers.remove(oldPath);
+                fileKinds.remove(oldPath);
+                cursors.remove(oldPath);
+                scrolls.remove(oldPath);
+                if (activeTab != null && activeTab.equals(oldPath)) {
+                    activeTab = openTabs.isEmpty() ? null : openTabs.get(openTabs.size() - 1);
+                    restoreCursor();
+                }
+            }
+            selectedTreeNode = null;
+            setStatus("已删除: " + node.name());
+            clearAndInit();
+        } catch (Exception e) {
+            setStatus("删除失败: " + e.getMessage());
+        }
+    }
+
+    /** 解析新建操作的父目录：选中目录用本身，选中文件用其父目录，未选则用首个数据包根。 */
+    private FileNode resolveParentDir() {
+        if (fileTree == null || fileTree.datapacks().isEmpty()) {
+            return null;
+        }
+        if (selectedTreeNode != null) {
+            if (selectedTreeNode.isDirectory()) {
+                return selectedTreeNode;
+            }
+            // 文件：找其父目录节点
+            return findParentNode(selectedTreeNode.path());
+        }
+        // 默认：当前命名空间数据包的 data 目录
+        String ns = state.getActiveDatapackNamespace();
+        String dpName = "dpe-" + ns;
+        for (FileNode dp : fileTree.datapacks()) {
+            if (dp.name().equals(dpName)) {
+                FileNode data = dp.childByName("data");
+                if (data != null) {
+                    FileNode nsDir = data.childByName(ns);
+                    return nsDir != null ? nsDir : data;
+                }
+                return dp;
+            }
+        }
+        return fileTree.datapacks().get(0);
+    }
+
+    /** 在文件树中查找某路径的父目录节点。 */
+    private FileNode findParentNode(String childPath) {
+        if (childPath == null || fileTree == null) {
+            return null;
+        }
+        int idx = childPath.lastIndexOf('/');
+        if (idx <= 0) {
+            // 顶层，父为数据包根
+            for (FileNode dp : fileTree.datapacks()) {
+                if (dp.childByName(childPath) != null) {
+                    return dp;
+                }
+            }
+            return null;
+        }
+        String parentPath = childPath.substring(0, idx);
+        for (FileNode dp : fileTree.datapacks()) {
+            FileNode found = dp.findByPath(parentPath);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    /** 切回积木模式：用合并式解析（保留原 state 引用与坐标），持久化窗口几何后切换。 */
+    private void switchToBlocks() {
+        // 合并式重载：传 this.state，按签名匹配保留坐标，不丢弃原 state
+        Map<String, String> files = collectFiles();
+        String ns = state.getActiveDatapackNamespace();
+        new TextToBlocksParser().parse(ns, files, this.state);
+        // 持久化窗口几何到 config（IDE 无画布，画布视图已存于 state）
+        if (window != null) {
+            window.applyToConfig(DatapackEditorClient.config());
+            DatapackEditorClient.saveConfig();
+        }
+        if (this.client != null) {
+            this.client.setScreen(new EditorScreen(this.state));
+        }
+    }
+
+    /** 把当前 buffers 解析回新 EditorState（仅用于无 state 的回退场景）。 */
     private EditorState parseFilesToState() {
         Map<String, String> files = collectFiles();
         String ns = state.getActiveDatapackNamespace();
@@ -281,17 +579,14 @@ public class IdeEditorScreen extends Screen {
         clearAndInit();
     }
 
-    /** 保存：把文件解析回 state。 */
+    /** 保存：合并式解析更新 this.state（保留坐标），写回磁盘，再编译验证。 */
     private void doSave() {
-        EditorState parsed = parseFilesToState();
-        // 同步 blocks 回原 state
-        // 清空原 blocks
-        for (com.dpe.common.block.EditorBlock b : new ArrayList<>(state.getBlocks())) {
-            state.removeBlock(b.id());
-        }
-        for (com.dpe.common.block.EditorBlock b : parsed.getBlocks()) {
-            state.addBlock(b);
-        }
+        Map<String, String> files = collectFiles();
+        String ns = state.getActiveDatapackNamespace();
+        // 合并式：在 this.state 上更新，保留坐标与引用
+        new TextToBlocksParser().parse(ns, files, this.state);
+        // 写回磁盘（若有真实文件节点）
+        saveActiveBufferToDisk();
         // 重新编译验证
         CompileResult result = new BlockCompiler().compile(state, reg);
         errors = result.errors();
@@ -299,19 +594,20 @@ public class IdeEditorScreen extends Screen {
         clearAndInit();
     }
 
-    /** 一键重载：通过 ReloadService 路由。 */
+    /** 一键重载：合并式保存后通过 ReloadService 路由。 */
     private void doReload() {
-        // 先保存再重载
-        EditorState parsed = parseFilesToState();
-        for (com.dpe.common.block.EditorBlock b : new ArrayList<>(state.getBlocks())) {
-            state.removeBlock(b.id());
-        }
-        for (com.dpe.common.block.EditorBlock b : parsed.getBlocks()) {
-            state.addBlock(b);
-        }
+        // 合并式保存到 this.state
+        Map<String, String> files = collectFiles();
+        String ns = state.getActiveDatapackNamespace();
+        new TextToBlocksParser().parse(ns, files, this.state);
+        saveActiveBufferToDisk();
         MinecraftClient mc = MinecraftClient.getInstance();
         ReloadResult r = ReloadService.reload(state, mc);
         setStatus((r.success() ? "重载成功: " : "重载失败: ") + r.message());
+        if (r.success()) {
+            // 重载后刷新文件树（磁盘可能已变化）
+            refreshFileTree();
+        }
     }
 
     /** 打开当前命名空间的数据包文件夹（Task 3）。 */
@@ -480,21 +776,78 @@ public class IdeEditorScreen extends Screen {
     }
 
     private void drawFileTree(DrawContext context, int mouseX, int mouseY) {
-        int y = TOP_BAR_H + 4;
-        context.drawTextWithShadow(this.textRenderer, Text.literal("文件"),
-                4, y, 0xAAAAAA);
-        y += 12;
-        for (String path : buffers.keySet()) {
-            boolean active = path.equals(activeTab);
-            boolean hover = mouseX >= 2 && mouseX < FILE_TREE_W - 2 && mouseY >= y && mouseY < y + 12;
-            int bg = active ? 0xFF094771 : (hover ? 0xFF37373D : 0xFF252526);
-            context.fill(2, y, FILE_TREE_W - 2, y + 12, bg);
-            String label = shortName(path);
-            int color = "json".equals(fileKinds.get(path)) ? 0xFFCC88FF : 0xFFD4D4D4;
-            context.drawTextWithShadow(this.textRenderer, Text.literal(label),
-                    6, y + 2, color);
-            y += 12;
+        treeRows.clear();
+        int wh = winHContent();
+        int top = TOP_BAR_H + 4;
+        // 底部操作栏占 ~52px，文件树可视区到此为止
+        int bottom = wh - BOTTOM_BAR_H - 52;
+        context.drawTextWithShadow(this.textRenderer, Text.literal("文件"), 4, top, 0xAAAAAA);
+        int y = top + 12 - treeScroll;
+        if (fileTree != null && !fileTree.datapacks().isEmpty()) {
+            // 真实文件树：递归遍历数据包节点
+            for (FileNode dp : fileTree.datapacks()) {
+                y = drawTreeNode(context, mouseX, mouseY, dp, 0, y, top, bottom);
+            }
+        } else {
+            // 回退：虚拟缓冲路径
+            for (String path : buffers.keySet()) {
+                if (y + TREE_ROW_H >= top && y < bottom) {
+                    drawTreeRowBg(context, mouseX, mouseY, 0, y, path.equals(activeTab),
+                            shortName(path), "json".equals(fileKinds.get(path)));
+                }
+                y += TREE_ROW_H;
+            }
         }
+    }
+
+    /** 递归绘制一个文件树节点（含折叠展开）。返回下一行的 y。 */
+    private int drawTreeNode(DrawContext context, int mouseX, int mouseY, FileNode node,
+                             int depth, int y, int top, int bottom) {
+        if (y + TREE_ROW_H >= top && y < bottom) {
+            int indent = depth * 8;
+            int x0 = 2 + indent;
+            boolean active = node.path().equals(activeTab);
+            boolean selected = node == selectedTreeNode;
+            boolean hover = mouseX >= x0 && mouseX < FILE_TREE_W - 2
+                    && mouseY >= y && mouseY < y + TREE_ROW_H;
+            int bg = active ? 0xFF094771 : (selected ? 0xFF264F78 : (hover ? 0xFF37373D : 0xFF252526));
+            context.fill(x0, y, FILE_TREE_W - 2, y + TREE_ROW_H, bg);
+            // 折叠/展开标记（目录）
+            String prefix = "";
+            if (node.isDirectory()) {
+                prefix = collapsedDirs.contains(node.path()) ? "[+] " : "[-] ";
+            }
+            String label = prefix + node.name();
+            int color = node.isDirectory() ? 0xFF9CDCFE
+                    : (node.name().endsWith(".json") ? 0xFFCC88FF : 0xFFD4D4D4);
+            context.drawTextWithShadow(this.textRenderer, Text.literal(truncate(label, FILE_TREE_W - indent - 6)),
+                    x0 + 2, y + 1, color);
+        }
+        treeRows.add(new TreeDisplayRow(node, depth, y));
+        int ny = y + TREE_ROW_H;
+        if (node.isDirectory() && !collapsedDirs.contains(node.path())) {
+            for (FileNode child : node.children()) {
+                if (ny >= bottom) {
+                    break;
+                }
+                ny = drawTreeNode(context, mouseX, mouseY, child, depth + 1, ny, top, bottom);
+            }
+        }
+        return ny;
+    }
+
+    /** 绘制回退虚拟缓冲行背景与文字。 */
+    private void drawTreeRowBg(DrawContext context, int mouseX, int mouseY, int depth,
+                               int y, boolean active, String label, boolean isJson) {
+        int indent = depth * 8;
+        int x0 = 2 + indent;
+        boolean hover = mouseX >= x0 && mouseX < FILE_TREE_W - 2
+                && mouseY >= y && mouseY < y + TREE_ROW_H;
+        int bg = active ? 0xFF094771 : (hover ? 0xFF37373D : 0xFF252526);
+        context.fill(x0, y, FILE_TREE_W - 2, y + TREE_ROW_H, bg);
+        int color = isJson ? 0xFFCC88FF : 0xFFD4D4D4;
+        context.drawTextWithShadow(this.textRenderer, Text.literal(truncate(label, FILE_TREE_W - indent - 6)),
+                x0 + 2, y + 1, color);
     }
 
     private void drawEditor(DrawContext context, int mouseX, int mouseY) {
@@ -1098,20 +1451,42 @@ public class IdeEditorScreen extends Screen {
                 x += w;
             }
         }
-        // 文件树点击
+        // 文件树点击（真实 FileNode 或虚拟缓冲）
         if (lmx >= 0 && lmx < FILE_TREE_W && lmy >= TOP_BAR_H && lmy < wh - BOTTOM_BAR_H) {
-            int y = TOP_BAR_H + 4 + 12;
-            for (String path : buffers.keySet()) {
-                if (lmy >= y && lmy < y + 12) {
-                    saveCursor();
-                    activeTab = path;
-                    if (!openTabs.contains(path)) {
-                        openTabs.add(path);
+            // 真实文件树：用渲染行缓存命中
+            for (TreeDisplayRow row : treeRows) {
+                if (lmy >= row.y() && lmy < row.y() + TREE_ROW_H) {
+                    FileNode node = row.node();
+                    selectedTreeNode = node;
+                    if (node.isDirectory()) {
+                        // 点击目录：切换折叠
+                        if (collapsedDirs.contains(node.path())) {
+                            collapsedDirs.remove(node.path());
+                        } else {
+                            collapsedDirs.add(node.path());
+                        }
+                    } else {
+                        // 点击文件：读入缓冲并打开标签
+                        openFileNode(node);
                     }
-                    restoreCursor();
                     return true;
                 }
-                y += 12;
+            }
+            // 回退虚拟缓冲：按 buffers 顺序命中
+            if (fileTree == null || fileTree.datapacks().isEmpty()) {
+                int y = TOP_BAR_H + 4 + 12;
+                for (String path : buffers.keySet()) {
+                    if (lmy >= y && lmy < y + TREE_ROW_H) {
+                        saveCursor();
+                        activeTab = path;
+                        if (!openTabs.contains(path)) {
+                            openTabs.add(path);
+                        }
+                        restoreCursor();
+                        return true;
+                    }
+                    y += TREE_ROW_H;
+                }
             }
         }
         // 编辑器点击：定位光标
@@ -1195,6 +1570,14 @@ public class IdeEditorScreen extends Screen {
         int wh = winHContent();
         int editorX = FILE_TREE_W;
         int editorY = TOP_BAR_H + TAB_BAR_H;
+        // 文件树滚动（Task 6）
+        if (lmx >= 0 && lmx < FILE_TREE_W && lmy >= TOP_BAR_H && lmy < wh - BOTTOM_BAR_H) {
+            treeScroll -= (int) (verticalAmount * TREE_ROW_H * 2);
+            if (treeScroll < 0) {
+                treeScroll = 0;
+            }
+            return true;
+        }
         if (lmx >= editorX && lmx < ww && lmy >= editorY && lmy < wh - BOTTOM_BAR_H) {
             scrollY -= (int) (verticalAmount * LINE_H * 3);
             if (scrollY < 0) {

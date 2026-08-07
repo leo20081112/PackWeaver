@@ -12,24 +12,22 @@ import com.dpe.common.reload.ReloadEnvironment;
 import com.dpe.common.reload.ReloadResult;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ServerInfo;
+import net.minecraft.server.integrated.IntegratedServer;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 重载服务（Task 9 mod 部分）：按环境路由重载动作。
+ * 重载服务：按环境路由重载动作。
  * <ul>
- *   <li>单机：本地编译+导出+触发 {@link MinecraftClient#reloadResources()}。</li>
+ *   <li>单机：编译+导出到世界 datapacks 目录（解压目录），再触发集成服务器数据包重载（vanilla /reload）。</li>
  *   <li>专用服务端有插件：发送 {@link SaveApplyMessage} 给服务端。</li>
  *   <li>专用服务端无插件：拒绝并返回 denyMessage。</li>
  * </ul>
- * 简化判断：客户端是否曾收到过任意服务端消息（{@link ClientNetworking#serverReachable()}）
- * 用于区分 DEDICATED_WITH_PLUGIN / DEDICATED_NO_PLUGIN。
  */
 public final class ReloadService {
 
@@ -119,38 +117,24 @@ public final class ReloadService {
                 : ReloadEnvironment.DEDICATED_NO_PLUGIN;
     }
 
-    /** 单机：导出 zip 到世界 datapacks 目录，再触发资源重载。 */
+    /** 单机：一步导出到世界 datapacks 目录（解压目录），再触发集成服务器数据包重载（vanilla /reload）。 */
     private static ReloadResult doLocalReload(EditorState state, MinecraftClient mc) {
         try {
-            // OfflineDatapackIo.export 写到游戏目录 dpe-<ns>.zip；
-            // 单机环境下也写入世界 datapacks 目录使重载能识别。
-            Path exported = OfflineDatapackIo.export(state, BlockSchemaRegistry.DEFAULT);
-            // 尝试同步到世界 datapacks 目录
-            try {
-                Path worldDatapacks = DatapackEditorClient.worldDatapacksDir(mc);
-                if (worldDatapacks != null) {
-                    java.nio.file.Files.createDirectories(worldDatapacks);
-                    Path target = worldDatapacks.resolve(exported.getFileName());
-                    java.nio.file.Files.copy(exported, target,
-                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                }
-            } catch (IOException ignored) {
-                // 同步失败不影响主流程
+            // 一步落盘到世界 datapacks 目录（解压目录，便于持续编辑）
+            Path exported = OfflineDatapackIo.exportToDatapacksDir(state, BlockSchemaRegistry.DEFAULT, mc);
+            // 触发集成服务器数据包重载（vanilla /reload 等价，重载数据包而非资源包）
+            IntegratedServer server = mc.getServer();
+            if (server != null) {
+                // withLevel(2) 满足 /reload 所需权限；withSilent 抑制命令反馈
+                server.getCommandManager().executeWithPrefix(
+                        server.getCommandSource().withSilent().withLevel(2), "reload");
+                lastResult = new ReloadResult(true, "已写入并触发数据包重载", 1);
+                return new ReloadResult(true,
+                        "已写入并触发数据包重载: " + exported.getFileName(), 1);
             }
-            // 触发客户端/集成服务器资源重载（含 datapack）
-            CompletableFuture<Void> fut = mc.reloadResources();
-            if (fut != null) {
-                fut.whenComplete((v, ex) -> {
-                    if (ex != null) {
-                        lastResult = new ReloadResult(false, "重载异常: " + ex.getMessage(), 0);
-                    } else {
-                        lastResult = new ReloadResult(true, "已写入并重载", 1);
-                    }
-                });
-            } else {
-                lastResult = new ReloadResult(true, "已写入文件（重载未触发）", 0);
-            }
-            return new ReloadResult(true, "已写入并请求重载: " + exported.getFileName(), 1);
+            lastResult = new ReloadResult(true, "已写入文件（无集成服务器，未触发重载）", 0);
+            return new ReloadResult(true,
+                    "已写入: " + exported.getFileName() + "（未触发重载）", 0);
         } catch (IllegalStateException e) {
             ReloadResult r = new ReloadResult(false, "编译失败: " + e.getMessage(), 0);
             lastResult = r;

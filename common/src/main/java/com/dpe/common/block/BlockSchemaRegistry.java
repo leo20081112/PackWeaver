@@ -133,5 +133,10 @@ public final class BlockSchemaRegistry {
                         new BlockField("text", BlockFieldType.TEXT_COMPONENT, true, null, List.of())
                 ),
                 List.of(), "mcfunction"));
+
+        // ---------- 原始文本（保留未识别命令/注释原文，往返无损） ----------
+        register(new BlockSchema("raw_text", BlockCategory.ACTION, "原始文本", "#888888",
+                List.of(new BlockField("text", BlockFieldType.STRING, true, null, List.of())),
+                List.of(), "mcfunction"));
     }
 }

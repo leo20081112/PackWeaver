@@ -28,6 +28,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -69,6 +70,29 @@ public class EditorScreen extends Screen {
     private int blockCounter = 0;
     private double nextPlaceX = 40;
     private double nextPlaceY = 40;
+    /** 蛇形网格布局参数（Task 8）：列宽 180，行高 90，从 (40,40) 起。 */
+    private static final double GRID_W = 180;
+    private static final double GRID_H = 90;
+    private static final double GRID_START_X = 40;
+    private static final double GRID_START_Y = 40;
+    /** 蛇形布局当前列（纵向延伸，列满换列）。 */
+    private int gridCol = 0;
+    private double gridNextY = GRID_START_Y;
+    /** 重叠命中穿透：右键/Tab 在重叠积木间循环选中的偏移（Task 8）。 */
+    private int hitOffset = 0;
+
+    /** 积木所属文件分组（Task 7）：blockId -> 组键（事件根 schemaId 或 "ungrouped"）。 */
+    private final Map<String, String> blockFile = new HashMap<>();
+    /** 折叠的分组（仅显示标题栏）。 */
+    private final Set<String> collapsedFiles = new HashSet<>();
+    /** 隐藏的分组（标题栏与积木均不绘制）。 */
+    private final Set<String> hiddenFiles = new HashSet<>();
+    /** 分组标题栏渲染缓存（render 构建，mouseClicked 命中复用）。 */
+    private final List<GroupHeader> groupHeaders = new ArrayList<>();
+    private static final int HEADER_H = 14;
+    /** 分组标题栏：组键 + 屏幕矩形 + 关闭小按钮区。 */
+    private record GroupHeader(String groupKey, int x, int y, int w, int h, int closeX) {
+    }
 
     private final Map<String, TextFieldWidget> fieldTextFields = new HashMap<>();
 
@@ -100,6 +124,14 @@ public class EditorScreen extends Screen {
         this.state = state == null ? new EditorState() : state;
         this.reg = BlockSchemaRegistry.DEFAULT;
         this.canvas = new Canvas();
+        // 从 state 恢复画布视图（Canvas 无 setter，初始 zoom=1.0/pan=0,0，用 zoomBy/panBy 等效还原）
+        if (state != null) {
+            double targetZoom = state.getZoom();
+            if (targetZoom > 0 && Math.abs(targetZoom - 1.0) > 1e-9) {
+                this.canvas.zoomBy(targetZoom);
+            }
+            this.canvas.panBy(state.getPanX(), state.getPanY());
+        }
     }
 
     // ---------- 窗口几何辅助 ----------
@@ -203,6 +235,16 @@ public class EditorScreen extends Screen {
                         .dimensions(fx, fy, fw, 14).build());
                 fy += 15;
                 addDrawableChild(ButtonWidget.builder(Text.literal("删除积木"), b -> deleteSelected())
+                        .dimensions(fx, fy, fw, 14).build());
+                fy += 15;
+                // NBT 复制按钮（Task 9）：坐标/物品/准星目标
+                addDrawableChild(ButtonWidget.builder(Text.literal("复制坐标 (C)"), b -> copyCoordinatesAction())
+                        .dimensions(fx, fy, fw, 14).build());
+                fy += 15;
+                addDrawableChild(ButtonWidget.builder(Text.literal("复制物品 (I)"), b -> copyHeldItemAction())
+                        .dimensions(fx, fy, fw, 14).build());
+                fy += 15;
+                addDrawableChild(ButtonWidget.builder(Text.literal("复制目标 (T)"), b -> copyTargetNbtAction())
                         .dimensions(fx, fy, fw, 14).build());
                 fy += 15;
             }
@@ -324,23 +366,210 @@ public class EditorScreen extends Screen {
             return;
         }
         String id = "b" + (++blockCounter);
-        EditorBlock block = new EditorBlock(id, schemaId, nextPlaceX, nextPlaceY);
+        // 蛇形网格布局：纵向延伸 y，列满换列；查找空闲格子（与已有积木矩形不相交）
+        double[] pos = findFreeGridCell(schema);
+        EditorBlock block = new EditorBlock(id, schemaId, pos[0], pos[1]);
         for (BlockField f : schema.fields()) {
             if (f.defaultValue() != null) {
                 block.fieldValues().put(f.name(), f.defaultValue());
             }
         }
         state.addBlock(block);
-        nextPlaceX += 24;
-        nextPlaceY += 24;
-        if (nextPlaceX > 400) {
-            nextPlaceX = 40;
-            nextPlaceY = 40;
-        }
         selectedId = id;
         linkMode = false;
         setStatus("已添加: " + schema.label());
         clearAndInit();
+    }
+
+    /**
+     * 蛇形网格查找空闲格子（Task 8）：从 (GRID_START_X, GRID_START_Y) 起纵向递增 y，
+     * 每列满（y 超过 8 格）换下一列；跳过与已有积木矩形相交的格子。
+     * @return {x, y} 世界坐标
+     */
+    private double[] findFreeGridCell(BlockSchema schema) {
+        int bh = blockHeight(schema);
+        int maxRows = 8;
+        for (int attempts = 0; attempts < 256; attempts++) {
+            double x = GRID_START_X + gridCol * GRID_W;
+            double y = gridNextY;
+            if (!intersectsExisting(x, y, BLOCK_W, bh)) {
+                // 占用此格，推进 y
+                gridNextY += GRID_H;
+                if ((gridNextY - GRID_START_Y) / GRID_H >= maxRows) {
+                    gridCol++;
+                    gridNextY = GRID_START_Y;
+                }
+                return new double[]{x, y};
+            }
+            gridNextY += GRID_H;
+            if ((gridNextY - GRID_START_Y) / GRID_H >= maxRows) {
+                gridCol++;
+                gridNextY = GRID_START_Y;
+            }
+        }
+        // 回退：返回当前指针位置
+        return new double[]{GRID_START_X + gridCol * GRID_W, gridNextY};
+    }
+
+    /** 判断世界坐标矩形是否与已有积木相交（排除拖拽中的积木）。 */
+    private boolean intersectsExisting(double x, double y, int w, int h) {
+        return intersectsExisting(x, y, w, h, null);
+    }
+
+    private boolean intersectsExisting(double x, double y, int w, int h, String excludeId) {
+        for (EditorBlock b : state.getBlocks()) {
+            if (excludeId != null && excludeId.equals(b.id())) {
+                continue;
+            }
+            BlockSchema bs = reg.get(b.schemaId());
+            int bh = blockHeight(bs);
+            if (x < b.x() + BLOCK_W && x + w > b.x()
+                    && y < b.y() + bh && y + h > b.y()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 拖拽落点若与其它块相交，snap 到最近空闲网格位（Task 8）。 */
+    private double[] snapToFreeGrid(EditorBlock block) {
+        BlockSchema schema = reg.get(block.schemaId());
+        int bh = blockHeight(schema);
+        // 在 block 当前位置附近搜索最近的空闲网格格
+        double baseCol = Math.round((block.x() - GRID_START_X) / GRID_W);
+        double baseRow = Math.round((block.y() - GRID_START_Y) / GRID_H);
+        if (baseCol < 0) baseCol = 0;
+        if (baseRow < 0) baseRow = 0;
+        for (int radius = 0; radius < 32; radius++) {
+            for (int dr = -radius; dr <= radius; dr++) {
+                for (int dc = -radius; dc <= radius; dc++) {
+                    if (Math.abs(dr) != radius && Math.abs(dc) != radius) {
+                        continue; // 只检查外圈
+                    }
+                    int col = (int) (baseCol + dc);
+                    int row = (int) (baseRow + dr);
+                    if (col < 0 || row < 0) {
+                        continue;
+                    }
+                    double x = GRID_START_X + col * GRID_W;
+                    double y = GRID_START_Y + row * GRID_H;
+                    if (!intersectsExisting(x, y, BLOCK_W, bh, block.id())) {
+                        return new double[]{x, y};
+                    }
+                }
+            }
+        }
+        return new double[]{block.x(), block.y()};
+    }
+
+    // ---------- 分组（Task 7）----------
+
+    /**
+     * 重建积木-分组关联：按事件根 schemaId 分组（向上查找父链到事件类根块），
+     * 无事件根的归入 "ungrouped"。结果写入 {@link #blockFile}。
+     */
+    private void rebuildGroups() {
+        blockFile.clear();
+        // child -> parent 映射
+        Map<String, String> parentOf = new HashMap<>();
+        for (EditorBlock b : state.getBlocks()) {
+            for (String childId : b.childIds()) {
+                parentOf.put(childId, b.id());
+            }
+        }
+        for (EditorBlock b : state.getBlocks()) {
+            String cur = b.id();
+            String rootId = cur;
+            Set<String> visited = new HashSet<>();
+            while (parentOf.containsKey(cur) && visited.add(cur)) {
+                cur = parentOf.get(cur);
+                rootId = cur;
+            }
+            EditorBlock root = state.getById(rootId);
+            if (root != null) {
+                BlockSchema rootSchema = reg.get(root.schemaId());
+                if (rootSchema != null && rootSchema.category() == BlockCategory.EVENT) {
+                    blockFile.put(b.id(), root.schemaId());
+                    continue;
+                }
+            }
+            blockFile.put(b.id(), "ungrouped");
+        }
+    }
+
+    /** 分组显示名：事件根 schema 的 label，否则 "未分组"。 */
+    private String groupLabel(String groupKey) {
+        if (groupKey == null || "ungrouped".equals(groupKey)) {
+            return "未分组";
+        }
+        BlockSchema schema = reg.get(groupKey);
+        return schema != null ? schema.label() : groupKey;
+    }
+
+    /** 绘制每个分组的标题栏（折叠/隐藏按钮），并填充 {@link #groupHeaders} 供命中检测。 */
+    private void drawGroupHeaders(DrawContext context) {
+        groupHeaders.clear();
+        if (state.getBlocks().isEmpty()) {
+            return;
+        }
+        Map<String, List<EditorBlock>> groups = new LinkedHashMap<>();
+        for (EditorBlock b : state.getBlocks()) {
+            String gk = blockFile.getOrDefault(b.id(), "ungrouped");
+            groups.computeIfAbsent(gk, k -> new ArrayList<>()).add(b);
+        }
+        int headerW = 130;
+        for (Map.Entry<String, List<EditorBlock>> e : groups.entrySet()) {
+            String gk = e.getKey();
+            if (hiddenFiles.contains(gk)) {
+                continue;
+            }
+            List<EditorBlock> blocks = e.getValue();
+            double minX = Double.MAX_VALUE;
+            double minY = Double.MAX_VALUE;
+            for (EditorBlock b : blocks) {
+                if (b.x() < minX) {
+                    minX = b.x();
+                }
+                if (b.y() < minY) {
+                    minY = b.y();
+                }
+            }
+            int sx = toScreenX(minX);
+            int sy = toScreenY(minY) - HEADER_H - 2;
+            context.fill(sx, sy, sx + headerW, sy + HEADER_H, 0xFF3A3A5A);
+            context.drawBorder(sx, sy, headerW, HEADER_H, 0xFF7777BB);
+            String mark = collapsedFiles.contains(gk) ? "[+] " : "[-] ";
+            String label = truncate(mark + groupLabel(gk), headerW - 22);
+            context.drawTextWithShadow(this.textRenderer, Text.literal(label), sx + 3, sy + 2, 0xFFCCCCFF);
+            int closeX = sx + headerW - 14;
+            context.drawTextWithShadow(this.textRenderer, Text.literal("×"), closeX + 2, sy + 1, 0xFFFFAAAA);
+            groupHeaders.add(new GroupHeader(gk, sx, sy, headerW, HEADER_H, closeX));
+        }
+    }
+
+    /** 平移画布使指定分组的首块居中。 */
+    private void centerOnGroup(String groupKey) {
+        if (groupKey == null) {
+            return;
+        }
+        EditorBlock first = null;
+        for (EditorBlock b : state.getBlocks()) {
+            if (groupKey.equals(blockFile.getOrDefault(b.id(), "ungrouped"))) {
+                first = b;
+                break;
+            }
+        }
+        if (first == null) {
+            return;
+        }
+        int canvasX0 = paletteVisible ? PALETTE_W : 0;
+        int canvasW = winW() - FIELD_PANEL_W - canvasX0;
+        int canvasH = winHContent() - BOTTOM_BAR_H - TOP_BAR_H;
+        double z = canvas.getZoom();
+        double targetPanX = (canvasX0 + canvasW / 2.0) - (first.x() + BLOCK_W / 2.0) * z;
+        double targetPanY = (TOP_BAR_H + canvasH / 2.0) - first.y() * z;
+        canvas.panBy(targetPanX - canvas.getPanX(), targetPanY - canvas.getPanY());
+        setStatus("已定位到分组: " + groupLabel(groupKey));
     }
 
     private void deleteSelected() {
@@ -351,6 +580,27 @@ public class EditorScreen extends Screen {
         selectedId = null;
         linkMode = false;
         setStatus("积木已删除");
+        clearAndInit();
+    }
+
+    /** 复制玩家/准星坐标到选中积木的 pos 字段（Task 9）。 */
+    private void copyCoordinatesAction() {
+        String msg = NbtCopyService.copyCoordinatesInto(state, selectedId, reg, MinecraftClient.getInstance());
+        setStatus(msg);
+        clearAndInit();
+    }
+
+    /** 复制主手物品 id 到选中积木（Task 9）；物品 NBT 写入剪贴板。 */
+    private void copyHeldItemAction() {
+        String msg = NbtCopyService.copyHeldItemInto(state, selectedId, reg, MinecraftClient.getInstance());
+        setStatus(msg);
+        clearAndInit();
+    }
+
+    /** 复制准星方块/实体到选中积木（Task 9）；目标 NBT 写入剪贴板。 */
+    private void copyTargetNbtAction() {
+        String msg = NbtCopyService.copyTargetNbtInto(state, selectedId, reg, MinecraftClient.getInstance());
+        setStatus(msg);
         clearAndInit();
     }
 
@@ -384,9 +634,23 @@ public class EditorScreen extends Screen {
         }
     }
 
-    /** 切到 IDE 模式。 */
+    /** 切到 IDE 模式：先持久化画布视图与窗口几何到 state/config，再切换。 */
     private void switchToIde() {
+        // 画布视图写入 state（zoom/pan），避免跳位
         syncViewToState();
+        // 窗口几何写回 config 并保存
+        if (window != null) {
+            window.applyToConfig(DatapackEditorClient.config());
+            DatapackEditorClient.saveConfig();
+        }
+        // 单机：确保真实数据包骨架存在，IDE 直接编辑真实文件树（Task 10）
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc != null && DatapackEditorClient.worldDatapacksDir(mc) != null) {
+            Path skeleton = DatapackEditorClient.generateSkeleton(state.getActiveDatapackNamespace(), mc);
+            if (skeleton != null) {
+                setStatus("已生成/确认数据包骨架: " + skeleton.getFileName());
+            }
+        }
         if (this.client != null) {
             this.client.setScreen(new IdeEditorScreen(state));
         }
@@ -488,9 +752,18 @@ public class EditorScreen extends Screen {
 
     private void exportZip() {
         syncViewToState();
+        MinecraftClient mc = MinecraftClient.getInstance();
+        Path worldDatapacks = DatapackEditorClient.worldDatapacksDir(mc);
         try {
-            Path target = OfflineDatapackIo.export(state, reg);
-            setStatus("已导出: " + target.getFileName());
+            if (worldDatapacks != null) {
+                // 单机：直接落盘到世界 datapacks 目录（解压目录）
+                Path target = OfflineDatapackIo.exportToDatapacksDir(state, reg, mc);
+                setStatus("已导出到 datapacks: " + target.getFileName());
+            } else {
+                // 非单机回退：写游戏目录 zip
+                Path target = OfflineDatapackIo.export(state, reg);
+                setStatus("已导出(游戏目录): " + target.getFileName());
+            }
         } catch (IllegalStateException e) {
             compilePreview = "§c导出失败§r\n" + e.getMessage();
             setStatus("导出失败");
@@ -502,12 +775,12 @@ public class EditorScreen extends Screen {
 
     private void saveAndApply() {
         syncViewToState();
-        if (ClientNetworking.canSend()) {
-            // 通过 ReloadService 统一路由
-            ReloadResult r = ReloadService.reload(state, MinecraftClient.getInstance());
-            setStatus((r.success() ? "成功: " : "失败: ") + r.message());
-        } else {
-            exportZip();
+        // 统一通过 ReloadService 路由：单机一步落盘 + 数据包重载；远程发服务端
+        ReloadResult r = ReloadService.reload(state, MinecraftClient.getInstance());
+        setStatus((r.success() ? "成功: " : "失败: ") + r.message());
+        if (!r.success()) {
+            compilePreview = "§c保存失败§r\n" + r.message();
+            clearAndInit();
         }
     }
 
@@ -592,10 +865,18 @@ public class EditorScreen extends Screen {
         drawCanvasGrid(context);
         // 连线
         drawConnections(context);
-        // 积木块
+        // 重建分组关联（Task 7）
+        rebuildGroups();
+        // 积木块（跳过隐藏/折叠分组的块，但折叠时仍画标题栏）
         for (EditorBlock block : state.getBlocks()) {
+            String gk = blockFile.getOrDefault(block.id(), "ungrouped");
+            if (hiddenFiles.contains(gk) || collapsedFiles.contains(gk)) {
+                continue;
+            }
             drawBlock(context, block);
         }
+        // 分组标题栏（在积木之上，可点击：左键居中/右键折叠/×隐藏）
+        drawGroupHeaders(context);
 
         // 字段面板
         drawFieldPanel(context);
@@ -1048,7 +1329,56 @@ public class EditorScreen extends Screen {
                 || lmy < TOP_BAR_H || lmy >= wh - BOTTOM_BAR_H) {
             return false;
         }
+        // 分组标题栏命中（Task 7）：左键居中，右键折叠，"[×]"隐藏
+        if (button == 0 || button == 1) {
+            for (GroupHeader gh : groupHeaders) {
+                if (lmx >= gh.x() && lmx < gh.x() + gh.w()
+                        && lmy >= gh.y() && lmy < gh.y() + gh.h()) {
+                    if (button == 0 && lmx >= gh.closeX() && lmx < gh.closeX() + 12) {
+                        // 隐藏分组
+                        hiddenFiles.add(gh.groupKey());
+                        setStatus("已隐藏分组: " + groupLabel(gh.groupKey()));
+                        clearAndInit();
+                        return true;
+                    }
+                    if (button == 1) {
+                        // 右键：切换折叠
+                        if (collapsedFiles.contains(gh.groupKey())) {
+                            collapsedFiles.remove(gh.groupKey());
+                        } else {
+                            collapsedFiles.add(gh.groupKey());
+                        }
+                        setStatus(collapsedFiles.contains(gh.groupKey())
+                                ? "已折叠: " + groupLabel(gh.groupKey())
+                                : "已展开: " + groupLabel(gh.groupKey()));
+                        clearAndInit();
+                        return true;
+                    }
+                    // 左键：平移居中到该组首个积木
+                    centerOnGroup(gh.groupKey());
+                    return true;
+                }
+            }
+            // 顶部"显示隐藏分组"恢复条
+            if (button == 0 && !hiddenFiles.isEmpty()
+                    && lmx >= canvasX0 + 4 && lmx < canvasX0 + 200
+                    && lmy >= TOP_BAR_H + 2 && lmy < TOP_BAR_H + 14) {
+                hiddenFiles.clear();
+                setStatus("已恢复所有隐藏分组");
+                clearAndInit();
+                return true;
+            }
+        }
+        // 右键：命中积木则循环穿透，否则平移
         if (button == 1) {
+            List<String> hits = hitBlocks(lmx, lmy);
+            if (!hits.isEmpty()) {
+                hitOffset++;
+                selectedId = hitBlock(lmx, lmy);
+                setStatus("切换层级: " + selectedId);
+                clearAndInit();
+                return true;
+            }
             panning = true;
             lastPanX = (int) mouseX;
             lastPanY = (int) mouseY;
@@ -1057,6 +1387,8 @@ public class EditorScreen extends Screen {
         if (button != 0) {
             return false;
         }
+        // 左键命中积木：重置穿透偏移并选中
+        hitOffset = 0;
         String hit = hitBlock(lmx, lmy);
         if (linkMode && hit != null && selectedId != null && !hit.equals(selectedId)) {
             state.connect(selectedId, hit);
@@ -1124,6 +1456,16 @@ public class EditorScreen extends Screen {
             return true;
         }
         if (draggingId != null) {
+            // 拖拽落点若与其它块相交，snap 到最近空闲网格位（Task 8）
+            EditorBlock dragged = state.getById(draggingId);
+            if (dragged != null) {
+                BlockSchema ds = reg.get(dragged.schemaId());
+                int dh = blockHeight(ds);
+                if (intersectsExisting(dragged.x(), dragged.y(), BLOCK_W, dh, draggingId)) {
+                    double[] snapped = snapToFreeGrid(dragged);
+                    state.moveBlock(draggingId, snapped[0], snapped[1]);
+                }
+            }
             draggingId = null;
             return true;
         }
@@ -1183,7 +1525,32 @@ public class EditorScreen extends Screen {
                 return true;
             }
         }
+        // NBT 复制快捷键（Task 9）：C 坐标 / I 物品 / T 准星目标；文本框聚焦时不拦截
+        if (!anyFieldFocused() && selectedId != null) {
+            if (keyCode == GLFW.GLFW_KEY_C) {
+                copyCoordinatesAction();
+                return true;
+            }
+            if (keyCode == GLFW.GLFW_KEY_I) {
+                copyHeldItemAction();
+                return true;
+            }
+            if (keyCode == GLFW.GLFW_KEY_T) {
+                copyTargetNbtAction();
+                return true;
+            }
+        }
         return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    /** 是否有字段文本框正在聚焦（避免快捷键吞掉文本输入）。 */
+    private boolean anyFieldFocused() {
+        for (TextFieldWidget tf : fieldTextFields.values()) {
+            if (tf != null && tf.isFocused()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -1200,19 +1567,43 @@ public class EditorScreen extends Screen {
                 && y >= TOP_BAR_H && y < winHContent() - BOTTOM_BAR_H;
     }
 
+    /** 命中检测：返回鼠标下最上层积木 id（重叠时按 hitOffset 偏移循环，Task 8）。 */
     private String hitBlock(double mouseX, double mouseY) {
         double wx = toWorldX(mouseX);
         double wy = toWorldY(mouseY);
+        List<EditorBlock> hits = new ArrayList<>();
         List<EditorBlock> list = new ArrayList<>(state.getBlocks());
         for (int i = list.size() - 1; i >= 0; i--) {
             EditorBlock b = list.get(i);
             BlockSchema schema = reg.get(b.schemaId());
             int h = blockHeight(schema);
             if (wx >= b.x() && wx <= b.x() + BLOCK_W && wy >= b.y() && wy <= b.y() + h) {
-                return b.id();
+                hits.add(b);
             }
         }
-        return null;
+        if (hits.isEmpty()) {
+            return null;
+        }
+        // 重叠时按 hitOffset 取第 N 个命中的积木（穿透切换层级）
+        int idx = Math.floorMod(hitOffset, hits.size());
+        return hits.get(idx).id();
+    }
+
+    /** 命中所有积木（按从上到下顺序），用于循环切换。 */
+    private List<String> hitBlocks(double mouseX, double mouseY) {
+        double wx = toWorldX(mouseX);
+        double wy = toWorldY(mouseY);
+        List<String> hits = new ArrayList<>();
+        List<EditorBlock> list = new ArrayList<>(state.getBlocks());
+        for (int i = list.size() - 1; i >= 0; i--) {
+            EditorBlock b = list.get(i);
+            BlockSchema schema = reg.get(b.schemaId());
+            int h = blockHeight(schema);
+            if (wx >= b.x() && wx <= b.x() + BLOCK_W && wy >= b.y() && wy <= b.y() + h) {
+                hits.add(b.id());
+            }
+        }
+        return hits;
     }
 
     @Override

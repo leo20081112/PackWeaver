@@ -29,6 +29,10 @@ tasks.withType<JavaCompile>().configureEach {
     options.release = 21
 }
 
+tasks.withType<Jar>().configureEach {
+    archiveBaseName = "packweaver-mod"
+}
+
 tasks.processResources {
     val projectVersion = project.version as String
     inputs.property("version", projectVersion)

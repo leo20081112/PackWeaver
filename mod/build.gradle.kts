@@ -33,6 +33,11 @@ tasks.withType<Jar>().configureEach {
     archiveBaseName = "packweaver-mod"
 }
 
+// 确保 remapJar 也用 packweaver-mod 前缀
+tasks.named("remapJar") {
+    archiveBaseName = "packweaver-mod"
+}
+
 tasks.processResources {
     val projectVersion = project.version as String
     inputs.property("version", projectVersion)

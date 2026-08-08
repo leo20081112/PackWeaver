@@ -27,10 +27,52 @@ jobs:
       - name: Build
         run: ./gradlew build --no-daemon
 
+      - name: Rename artifacts
+        run: |
+          cd mod/build/libs
+          rm -f *-dev.jar *-sources.jar *-all.jar
+          for f in *.jar; do mv "$f" "packweaver-mod-${GITHUB_REF_NAME}.jar"; done
+          cd ../../../plugin/build/libs
+          rm -f *-dev.jar *-sources.jar *-all.jar
+          for f in *.jar; do mv "$f" "packweaver-plugin-${GITHUB_REF_NAME}.jar"; done
+
       - name: Create GitHub Release and upload jars
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            mod/build/libs/*.jar
-            plugin/build/libs/*.jar
-          generate_release_notes: true
+            mod/build/libs/packweaver-mod-*.jar
+            plugin/build/libs/packweaver-plugin-*.jar
+          body: |
+            ## PackWeaver v0.3.0
+
+            ### 新功能
+            - **积木与 IDE 一比一转译**：TextToBlocksParser 和 BlockCompiler 实现完整的双向转译，raw_text 积木确保原样输出
+            - **文件树管理**：DatapackScanner 支持扫描目录和 zip 格式数据包，可视化文件树管理全部内容
+            - **多文件管理**：支持数据包内文件的增删改查，包括 zip 内文件编辑
+            - **积木类分组与导航**：按文件路径对积木分组，支持显隐、折叠与定位到积木
+            - **IDE 模式自动模板**：进入 IDE 模式自动生成数据包模板结构
+            - **一键复制功能**：
+              - 复制当前坐标到剪贴板
+              - 复制手中物品 NBT
+              - 复制指向物品 NBT
+            - **数据包重载**：修正重载 API，仅重载数据包而非资源包
+            - **小窗化与独立窗口**：支持游戏内小窗模式和拖拽出游戏成为独立界面
+            - **双模式编辑**：积木模式（类似 Scratch）+ IDE 模式（类似 VSCode），支持自动补全含中文解释
+            - **MCWiki 查阅**：支持查阅 MCWiki 原版数据包内容
+
+            ### 修复
+            - 修复积木被模糊背景遮挡的问题
+            - 修复模式切换时积木漂移无法点击的问题
+            - 修复保存位置错误（现在正确保存到世界 datapacks 文件夹）
+            - 修复积木块重叠问题
+            - 修复重载 API 调用错误（之前重载了资源包而非数据包）
+
+            ### 变更
+            - 项目名称统一为 **PackWeaver**
+            - 配置文件路径更新为 `config/packweaver/config.json`
+            - 构建产物命名为 `packweaver-mod` 和 `packweaver-plugin`
+            - 版本号更新为 0.3.0
+
+            ### 安装
+            - **客户端 Mod**：将 `packweaver-mod-0.3.0.jar` 放入 `.minecraft/mods/` 目录（需要 Fabric Loader 和 Fabric API）
+            - **服务端插件**：将 `packweaver-plugin-0.3.0.jar` 放入服务端 `plugins/` 目录（需要 Paper 1.21.1）

@@ -34,7 +34,7 @@ tasks.withType<Jar>().configureEach {
 }
 
 // 确保 remapJar 也用 packweaver-mod 前缀
-tasks.named("remapJar") {
+tasks.named<Jar>("remapJar") {
     archiveBaseName = "packweaver-mod"
 }
 

@@ -1,21 +1,35 @@
 package com.dpe.common.config;
 
+import com.dpe.common.model.Project;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.reflect.TypeToken;
 
 import java.io.IOException;
+import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 用户配置，可序列化（Gson）。
  */
 public class UserConfig {
 
+    private static final Type PROJECT_LIST_TYPE = new TypeToken<List<Project>>(){}.getType();
+
+    /** 项目列表。 */
+    public List<Project> projects = new ArrayList<>();
+    /** 当前项目ID。 */
+    public String currentProjectId = null;
+
     /** 默认编辑模式："blocks"（积木）或 "ide"（代码）。 */
     public String defaultMode = "blocks";
     /** 是否显示新手引导。 */
     public boolean showOnboarding = true;
+    /** 是否显示高级积木分类（条件、动作）。 */
+    public boolean showAdvancedBlocks = false;
     /** 字体缩放倍率。 */
     public double fontSize = 1.0;
     /** 按键绑定。 */
@@ -60,7 +74,48 @@ public class UserConfig {
         if (c.keyBindings == null) {
             c.keyBindings = KeyBindings.defaults();
         }
+        if (c.projects == null) {
+            c.projects = new ArrayList<>();
+        }
         return c;
+    }
+
+    public Project getCurrentProject() {
+        if (currentProjectId == null) {
+            return null;
+        }
+        return projects.stream()
+                .filter(p -> p.id().equals(currentProjectId))
+                .findFirst()
+                .orElse(null);
+    }
+
+    public void addProject(Project project) {
+        if (projects == null) {
+            projects = new ArrayList<>();
+        }
+        projects.add(project);
+        currentProjectId = project.id();
+    }
+
+    public void setCurrentProject(String projectId) {
+        if (projects != null && projects.stream().anyMatch(p -> p.id().equals(projectId))) {
+            currentProjectId = projectId;
+        }
+    }
+
+    public void updateProject(Project updated) {
+        if (projects == null) return;
+        for (int i = 0; i < projects.size(); i++) {
+            if (projects.get(i).id().equals(updated.id())) {
+                projects.set(i, updated);
+                return;
+            }
+        }
+    }
+
+    public boolean hasCurrentProject() {
+        return currentProjectId != null && getCurrentProject() != null;
     }
 
     /** 从文件加载；文件不存在或读取失败返回 defaults。 */

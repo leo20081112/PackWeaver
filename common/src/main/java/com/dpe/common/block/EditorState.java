@@ -26,6 +26,7 @@ public final class EditorState {
     private double panX = 0.0;
     private double panY = 0.0;
     private String activeDatapackNamespace = "minecraft";
+    private String projectId = null;
 
     public EditorState() {
     }
@@ -60,8 +61,56 @@ public final class EditorState {
         if (b == null) {
             return false;
         }
-        blocksById.put(id, new EditorBlock(b.id(), b.schemaId(), x, y, b.fieldValues(), b.childIds()));
+        blocksById.put(id, new EditorBlock(b.id(), b.schemaId(), x, y, b.fieldValues(), b.childIds(), b.customName(), b.collapsed()));
         return true;
+    }
+
+    /** 更新块的自定义名称。 */
+    public boolean setCustomName(String id, String customName) {
+        EditorBlock b = blocksById.get(id);
+        if (b == null) {
+            return false;
+        }
+        blocksById.put(id, new EditorBlock(b.id(), b.schemaId(), b.x(), b.y(), b.fieldValues(), b.childIds(), customName, b.collapsed()));
+        return true;
+    }
+    
+    /** 设置块的折叠状态。 */
+    public boolean setCollapsed(String id, boolean collapsed) {
+        EditorBlock b = blocksById.get(id);
+        if (b == null) {
+            return false;
+        }
+        blocksById.put(id, new EditorBlock(b.id(), b.schemaId(), b.x(), b.y(), b.fieldValues(), b.childIds(), b.customName(), collapsed));
+        return true;
+    }
+
+    /** 按 customName 精确查找积木。 */
+    public EditorBlock getByCustomName(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        for (EditorBlock b : blocksById.values()) {
+            if (name.equals(b.customName())) {
+                return b;
+            }
+        }
+        return null;
+    }
+
+    /** 按 customName 模糊匹配查找积木（包含关系）。 */
+    public List<EditorBlock> getBlocksByCustomName(String name) {
+        List<EditorBlock> result = new ArrayList<>();
+        if (name == null || name.isBlank()) {
+            return result;
+        }
+        String lower = name.toLowerCase();
+        for (EditorBlock b : blocksById.values()) {
+            if (b.customName() != null && b.customName().toLowerCase().contains(lower)) {
+                result.add(b);
+            }
+        }
+        return result;
     }
 
     /** 连接父子块（父块 childIds 加入子块 id）。 */
@@ -123,6 +172,14 @@ public final class EditorState {
         this.activeDatapackNamespace = ns == null || ns.isBlank() ? "minecraft" : ns;
     }
 
+    public String getProjectId() {
+        return projectId;
+    }
+
+    public void setProjectId(String projectId) {
+        this.projectId = projectId;
+    }
+
     /** 序列化为 JSON 字符串。 */
     public String toJson() {
         JsonObject root = new JsonObject();
@@ -139,6 +196,12 @@ public final class EditorState {
                 kids.add(c);
             }
             bo.add("childIds", kids);
+            if (b.customName() != null && !b.customName().isBlank()) {
+                bo.addProperty("customName", b.customName());
+            }
+            if (b.collapsed()) {
+                bo.addProperty("collapsed", true);
+            }
             arr.add(bo);
         }
         root.add("blocks", arr);
@@ -146,6 +209,9 @@ public final class EditorState {
         root.addProperty("panX", panX);
         root.addProperty("panY", panY);
         root.addProperty("activeDatapackNamespace", activeDatapackNamespace);
+        if (projectId != null) {
+            root.addProperty("projectId", projectId);
+        }
         return GSON.toJson(root);
     }
 
@@ -156,6 +222,9 @@ public final class EditorState {
         EditorState state = new EditorState();
         if (root.has("activeDatapackNamespace")) {
             state.activeDatapackNamespace = root.get("activeDatapackNamespace").getAsString();
+        }
+        if (root.has("projectId")) {
+            state.projectId = root.get("projectId").getAsString();
         }
         if (root.has("zoom")) {
             state.zoom = root.get("zoom").getAsDouble();
@@ -186,7 +255,15 @@ public final class EditorState {
                         kids.add(ce.getAsString());
                     }
                 }
-                state.blocksById.put(id, new EditorBlock(id, schemaId, x, y, fv, kids));
+                String customName = null;
+                if (bo.has("customName") && !bo.get("customName").isJsonNull()) {
+                    customName = bo.get("customName").getAsString();
+                }
+                boolean collapsed = false;
+                if (bo.has("collapsed") && !bo.get("collapsed").isJsonNull()) {
+                    collapsed = bo.get("collapsed").getAsBoolean();
+                }
+                state.blocksById.put(id, new EditorBlock(id, schemaId, x, y, fv, kids, customName, collapsed));
             }
         }
         return state;

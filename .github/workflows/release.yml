@@ -2,15 +2,69 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run mode (skip publishing)'
+        required: false
+        default: 'false'
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    if: github.repository_owner == 'your-github-username' # TODO: 替换为你的GitHub用户名或组织名
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify environment
+        run: ./gradlew --version
+
+      - name: Build
+        run: ./gradlew build test --no-daemon
+
+      - name: Release
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          semantic_version: 22
+          branches: |
+            [
+              '+main'
+            ]
+          extra_plugins: |
+            @semantic-release/changelog
+            @semantic-release/git
+            @semantic-release/github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: github-actions[bot@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: github-actions[bot@users.noreply.github.com
+
+  build-artifacts:
+    needs: release
+    runs-on: ubuntu-latest
+    if: always() && needs.release.result == 'success'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,74 +78,44 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build
+      - name: Build release artifacts
         run: ./gradlew build --no-daemon
 
-      - name: Rename artifacts
-        env:
-          TAG: ${{ github.ref_name }}
+      - name: Set version variables
         run: |
-          # Mod: remove non-final jars, rename the remapped jar
+          if [ -n "${{ github.event.release.tag_name }}" ]; then
+            echo "VERSION=${{ github.event.release.tag_name }}" >> $GITHUB_ENV
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          fi
+
+      - name: Prepare mod artifact
+        run: |
           cd mod/build/libs
-          rm -f *-sources.jar *-all.jar *-dev.jar
-          JAR=$(ls *.jar 2>/dev/null | head -1)
-          if [ -z "$JAR" ]; then echo "No mod jar found!"; exit 1; fi
-          # Remove other jars, then rename the kept one
-          for f in *.jar; do [ "$f" != "$JAR" ] && rm -f "$f"; done
-          mv "$JAR" "packweaver-mod-${TAG}.jar"
+          rm -f *-sources.jar *-all.jar *-dev.jar *-javadoc.jar
+          JAR=$(ls *.jar 2>/dev/null | grep -v sources | grep -v all | grep -v dev | head -1)
+          if [ -n "$JAR" ]; then
+            for f in *.jar; do [ "$f" != "$JAR" ] && rm -f "$f"; done
+            mv "$JAR" "packweaver-mod-${VERSION:-latest}.jar"
+          fi
 
-          # Plugin: remove non-final jars, rename the reobf'd jar
-          cd ../../../plugin/build/libs
-          rm -f *-sources.jar *-all.jar *-dev.jar
-          JAR=$(ls *.jar 2>/dev/null | head -1)
-          if [ -z "$JAR" ]; then echo "No plugin jar found!"; exit 1; fi
-          for f in *.jar; do [ "$f" != "$JAR" ] && rm -f "$f"; done
-          mv "$JAR" "packweaver-plugin-${TAG}.jar"
-
-      - name: Delete existing release if any
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare plugin artifact
         run: |
-          gh release delete "${{ github.ref_name }}" --yes || true
+          cd plugin/build/libs
+          rm -f *-sources.jar *-all.jar *-dev.jar *-javadoc.jar
+          JAR=$(ls *.jar 2>/dev/null | grep -v sources | grep -v all | grep -v dev | head -1)
+          if [ -n "$JAR" ]; then
+            for f in *.jar; do [ "$f" != "$JAR" ] && rm -f "$f"; done
+            mv "$JAR" "packweaver-plugin-${VERSION:-latest}.jar"
+          fi
 
-      - name: Create GitHub Release and upload jars
+      - name: Upload release artifacts
         uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
             mod/build/libs/packweaver-mod-*.jar
             plugin/build/libs/packweaver-plugin-*.jar
-          generate_release_notes: false
-          body: |
-            ## PackWeaver v0.3.0
-
-            ### 新功能
-            - **积木与 IDE 一比一转译**：TextToBlocksParser 和 BlockCompiler 实现完整的双向转译，raw_text 积木确保原样输出
-            - **文件树管理**：DatapackScanner 支持扫描目录和 zip 格式数据包，可视化文件树管理全部内容
-            - **多文件管理**：支持数据包内文件的增删改查，包括 zip 内文件编辑
-            - **积木类分组与导航**：按文件路径对积木分组，支持显隐、折叠与定位到积木
-            - **IDE 模式自动模板**：进入 IDE 模式自动生成数据包模板结构
-            - **一键复制功能**：
-              - 复制当前坐标到剪贴板
-              - 复制手中物品 NBT
-              - 复制指向物品 NBT
-            - **数据包重载**：修正重载 API，仅重载数据包而非资源包
-            - **小窗化与独立窗口**：支持游戏内小窗模式和拖拽出游戏成为独立界面
-            - **双模式编辑**：积木模式（类似 Scratch）+ IDE 模式（类似 VSCode），支持自动补全含中文解释
-            - **MCWiki 查阅**：支持查阅 MCWiki 原版数据包内容
-
-            ### 修复
-            - 修复积木被模糊背景遮挡的问题
-            - 修复模式切换时积木漂移无法点击的问题
-            - 修复保存位置错误（现在正确保存到世界 datapacks 文件夹）
-            - 修复积木块重叠问题
-            - 修复重载 API 调用错误（之前重载了资源包而非数据包）
-
-            ### 变更
-            - 项目名称统一为 **PackWeaver**
-            - 配置文件路径更新为 `config/packweaver/config.json`
-            - 构建产物命名为 `packweaver-mod` 和 `packweaver-plugin`
-            - 版本号更新为 0.3.0
-
-            ### 安装
-            - **客户端 Mod**：将 `packweaver-mod-0.3.0.jar` 放入 `.minecraft/mods/` 目录（需要 Fabric Loader 和 Fabric API）
-            - **服务端插件**：将 `packweaver-plugin-0.3.0.jar` 放入服务端 `plugins/` 目录（需要 Paper 1.21.1）
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}

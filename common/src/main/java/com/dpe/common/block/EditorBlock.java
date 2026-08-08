@@ -15,7 +15,9 @@ public record EditorBlock(String id,
                           double x,
                           double y,
                           Map<String, Object> fieldValues,
-                          List<String> childIds) {
+                          List<String> childIds,
+                          String customName,
+                          boolean collapsed) {
 
     public EditorBlock {
         if (id == null || id.isBlank()) {
@@ -26,15 +28,26 @@ public record EditorBlock(String id,
         }
         fieldValues = fieldValues == null ? new HashMap<>() : new HashMap<>(fieldValues);
         childIds = childIds == null ? new ArrayList<>() : new ArrayList<>(childIds);
+        customName = customName == null ? null : customName.trim();
     }
 
-    /** 便捷构造（无字段、无子块）。 */
+    /** 便捷构造（无字段、无子块、无 customName、无折叠）。 */
     public EditorBlock(String id, String schemaId, double x, double y) {
-        this(id, schemaId, x, y, new HashMap<>(), new ArrayList<>());
+        this(id, schemaId, x, y, new HashMap<>(), new ArrayList<>(), null, false);
+    }
+
+    /** 便捷构造（无 customName、无折叠）。 */
+    public EditorBlock(String id, String schemaId, double x, double y, Map<String, Object> fieldValues, List<String> childIds) {
+        this(id, schemaId, x, y, fieldValues, childIds, null, false);
     }
 
     /** 深拷贝。 */
     public EditorBlock copy() {
-        return new EditorBlock(id, schemaId, x, y, new HashMap<>(fieldValues), new ArrayList<>(childIds));
+        return new EditorBlock(id, schemaId, x, y, new HashMap<>(fieldValues), new ArrayList<>(childIds), customName, collapsed);
+    }
+
+    /** 获取显示名称：优先返回 customName，否则返回 null。 */
+    public String displayName() {
+        return customName;
     }
 }

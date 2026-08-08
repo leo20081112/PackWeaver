@@ -52,6 +52,20 @@ public class IdeEditorScreen extends Screen {
     private static final int LINE_H = 11;
     private static final int CHAR_W = 6; // 近似字符宽
 
+    private static final int COMPLETION_PANEL_W = 280;
+    private static final int COMPLETION_PANEL_H = 12;
+    private static final int COMPLETION_DETAIL_W = 220;
+    private static final int COMPLETION_DETAIL_H = 100;
+    private static final int COMPLETION_BG = 0xF0000000;
+    private static final int COMPLETION_BORDER = 0xFF4488FF;
+    private static final int COMPLETION_SELECTED_BG = 0xFF094771;
+    private static final int COMPLETION_DETAIL_BG = 0xF0101010;
+
+    private static final Map<String, WikiCommandInfo> WIKI_CACHE = new LinkedHashMap<>();
+    private static final int WIKI_CACHE_MAX_SIZE = 100;
+    private static long lastWikiFetchTime = 0;
+    private static final long WIKI_FETCH_COOLDOWN = 60000;
+
     private final EditorState state;
     private final BlockSchemaRegistry reg = BlockSchemaRegistry.DEFAULT;
     private final CompletionService completionService = new CompletionService();
@@ -75,6 +89,10 @@ public class IdeEditorScreen extends Screen {
     private int scrollY = 0;
     private int cursorLine = 0;
     private int cursorCol = 0;
+
+    private int completionPanelX = 0;
+    private int completionPanelY = 0;
+    private int completionScrollOffset = 0;
 
     /** 当前编译错误列表。 */
     private List<ValidationError> errors = List.of();
@@ -110,6 +128,9 @@ public class IdeEditorScreen extends Screen {
 
     /** 文件树渲染行：节点 + 缩进深度 + 屏幕行号。 */
     private record TreeDisplayRow(FileNode node, int depth, int y) {
+    }
+
+    private record WikiCommandInfo(String commandName, String description, String example, long fetchTime) {
     }
 
     public IdeEditorScreen(EditorState state) {
@@ -218,6 +239,19 @@ public class IdeEditorScreen extends Screen {
             scrollY = s[1];
         }
         clampCursor();
+    }
+
+    private int[] calculateCompletionPosition(int mouseX, int mouseY, int panelWidth, int panelHeight) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        int screenHeight = mc.getWindow().getScaledHeight();
+        int screenWidth = mc.getWindow().getScaledWidth();
+
+        if (mouseY + panelHeight + 20 < screenHeight) {
+            return new int[]{mouseX, mouseY + 20};
+        } else if (mouseY - panelHeight - 20 > 0) {
+            return new int[]{mouseX, mouseY - panelHeight - 20};
+        }
+        return new int[]{(screenWidth - panelWidth) / 2, (screenHeight - panelHeight) / 2};
     }
 
     private void saveCursor() {
@@ -1080,45 +1114,161 @@ public class IdeEditorScreen extends Screen {
         }
     }
 
-    /** 补全浮层：在光标下方显示候选。 */
+    /** 补全浮层：独立渲染、位置智能调整、高亮选择、详情面板。 */
     private void drawCompletion(DrawContext context, int mouseX, int mouseY) {
-        int ww = winW();
-        int wh = winHContent();
-        if (activeTab == null || cursorLine < 0) {
+        if (activeTab == null || cursorLine < 0 || completionCandidates.isEmpty()) {
             return;
         }
         List<StringBuilder> lines = buffers.get(activeTab);
         if (lines == null || cursorLine >= lines.size()) {
             return;
         }
+
+        int editorX = FILE_TREE_W + LINE_NUMBER_W + 4;
+        int editorY = TOP_BAR_H + TAB_BAR_H;
+
         String curLine = lines.get(cursorLine).toString();
-        int cx = FILE_TREE_W + LINE_NUMBER_W + 4
-                + this.textRenderer.getWidth(curLine.substring(0, Math.min(cursorCol, curLine.length()))) - scrollX;
-        int cy = TOP_BAR_H + TAB_BAR_H + (cursorLine + 1) * LINE_H - scrollY;
-        int w = 240;
-        int h = Math.min(80, completionCandidates.size() * 11 + 14);
-        // 修正越界
-        if (cx + w > ww) {
-            cx = ww - w - 4;
-        }
-        if (cy + h > wh - BOTTOM_BAR_H) {
-            cy = TOP_BAR_H + TAB_BAR_H + cursorLine * LINE_H - scrollY - h;
-        }
-        context.fill(cx, cy, cx + w, cy + h, 0xF8000000);
-        context.drawBorder(cx, cy, w, h, 0xFF888888);
-        for (int i = 0; i < completionCandidates.size() && i < 7; i++) {
+        int cursorPixelX = editorX + this.textRenderer.getWidth(curLine.substring(0, Math.min(cursorCol, curLine.length()))) - scrollX;
+        int cursorPixelY = editorY + (cursorLine + 1) * LINE_H - scrollY;
+
+        int panelWidth = COMPLETION_PANEL_W;
+        int itemCount = Math.min(completionCandidates.size(), 8);
+        int panelHeight = itemCount * COMPLETION_PANEL_H + 20;
+
+        int[] pos = calculateCompletionPosition(cursorPixelX, cursorPixelY, panelWidth, panelHeight);
+        int panelX = pos[0];
+        int panelY = pos[1];
+
+        completionPanelX = panelX;
+        completionPanelY = panelY;
+
+        int visibleStart = Math.max(0, completionScrollOffset);
+        int visibleEnd = Math.min(completionCandidates.size(), visibleStart + 8);
+
+        context.getMatrices().push();
+        context.getMatrices().translate(0, 0, 400);
+
+        context.fill(panelX, panelY, panelX + panelWidth, panelY + panelHeight, COMPLETION_BG);
+        context.drawBorder(panelX, panelY, panelWidth, panelHeight, COMPLETION_BORDER);
+
+        int indexDisplayY = panelY + 2;
+        String indexStr = (completionIndex + 1) + "/" + completionCandidates.size();
+        context.drawTextWithShadow(this.textRenderer, Text.literal(indexStr),
+                panelX + panelWidth - this.textRenderer.getWidth(indexStr) - 4, indexDisplayY, 0xFF888888);
+
+        for (int i = visibleStart; i < visibleEnd; i++) {
             CompletionCandidate c = completionCandidates.get(i);
-            int ry = cy + 2 + i * 11;
-            if (i == completionIndex) {
-                context.fill(cx + 1, ry, cx + w - 1, ry + 11, 0xFF094771);
+            int ry = panelY + 14 + (i - visibleStart) * COMPLETION_PANEL_H;
+            boolean isSelected = (i == completionIndex);
+
+            if (isSelected) {
+                context.fill(panelX + 1, ry - 1, panelX + panelWidth - 1, ry + COMPLETION_PANEL_H - 1, COMPLETION_SELECTED_BG);
             }
+
             String label = c.label();
-            String detail = c.detail() == null ? "" : c.detail();
-            context.drawTextWithShadow(this.textRenderer, Text.literal(truncate(label, 110)),
-                    cx + 4, ry + 1, 0xFFFFFFFF);
-            context.drawTextWithShadow(this.textRenderer, Text.literal(truncate(detail, w - 120)),
-                    cx + 116, ry + 1, 0xFFAAAAAA);
+            int labelColor = isSelected ? 0xFFFFFFFF : 0xFFE0E0E0;
+            context.drawTextWithShadow(this.textRenderer, Text.literal(truncate(label, 130)),
+                    panelX + 6, ry + 2, labelColor);
+
+            if (c.kind() != null) {
+                String kindStr = c.kind();
+                int kindColor = kindStr.contains("Function") ? 0xFF569CD6 :
+                               kindStr.contains("Keyword") ? 0xFFC586C0 :
+                               kindStr.contains("Snippet") ? 0xFFCE9178 : 0xFF6A9955;
+                context.drawTextWithShadow(this.textRenderer, Text.literal(kindStr),
+                        panelX + panelWidth - this.textRenderer.getWidth(kindStr) - 6, ry + 2, kindColor);
+            }
         }
+
+        if (completionIndex >= 0 && completionIndex < completionCandidates.size()) {
+            CompletionCandidate selected = completionCandidates.get(completionIndex);
+            drawCompletionDetail(context, panelX, panelY, panelWidth, panelHeight, selected);
+        }
+
+        context.getMatrices().pop();
+    }
+
+    private void drawCompletionDetail(DrawContext context, int panelX, int panelY, int panelWidth, int panelHeight, CompletionCandidate candidate) {
+        int detailX = panelX + panelWidth + 4;
+        int detailY = panelY;
+
+        int screenWidth = MinecraftClient.getInstance().getWindow().getScaledWidth();
+        if (detailX + COMPLETION_DETAIL_W > screenWidth) {
+            detailX = panelX - COMPLETION_DETAIL_W - 4;
+        }
+
+        if (detailX < 0) {
+            detailX = panelX;
+            detailY = panelY + panelHeight + 4;
+        }
+
+        context.getMatrices().push();
+        context.getMatrices().translate(0, 0, 401);
+
+        context.fill(detailX, detailY, detailX + COMPLETION_DETAIL_W, detailY + COMPLETION_DETAIL_H, COMPLETION_DETAIL_BG);
+        context.drawBorder(detailX, detailY, COMPLETION_DETAIL_W, COMPLETION_DETAIL_H, COMPLETION_BORDER);
+
+        int textX = detailX + 8;
+        int textY = detailY + 8;
+        int maxTextWidth = COMPLETION_DETAIL_W - 16;
+
+        String name = candidate.label();
+        if (name != null && !name.isEmpty()) {
+            context.drawTextWithShadow(this.textRenderer, Text.literal(truncate(name, maxTextWidth / 6)),
+                    textX, textY, 0xFF4488FF);
+            textY += 14;
+        }
+
+        if (candidate.detail() != null && !candidate.detail().isEmpty()) {
+            String detail = candidate.detail();
+            String[] detailLines = wrapText(detail, maxTextWidth);
+            for (String line : detailLines) {
+                if (textY > detailY + COMPLETION_DETAIL_H - 12) break;
+                context.drawTextWithShadow(this.textRenderer, Text.literal(line),
+                        textX, textY, 0xFFAAAAAA);
+                textY += 11;
+            }
+            textY += 4;
+        }
+
+        if (candidate.insertText() != null && !candidate.insertText().isEmpty()) {
+            context.drawTextWithShadow(this.textRenderer, Text.literal("示例:"),
+                    textX, textY, 0xFF6A9955);
+            textY += 12;
+
+            String example = candidate.insertText();
+            String[] exampleLines = wrapText(example, maxTextWidth - 10);
+            for (String line : exampleLines) {
+                if (textY > detailY + COMPLETION_DETAIL_H - 12) break;
+                context.drawTextWithShadow(this.textRenderer, Text.literal("  " + line),
+                        textX, textY, 0xFFCE9178);
+                textY += 11;
+            }
+        }
+
+        context.getMatrices().pop();
+    }
+
+    private String[] wrapText(String text, int maxPixelWidth) {
+        if (text == null || text.isEmpty()) {
+            return new String[0];
+        }
+        List<String> lines = new ArrayList<>();
+        StringBuilder currentLine = new StringBuilder();
+
+        for (char c : text.toCharArray()) {
+            String testLine = currentLine.toString() + c;
+            if (this.textRenderer.getWidth(testLine) > maxPixelWidth && currentLine.length() > 0) {
+                lines.add(currentLine.toString());
+                currentLine = new StringBuilder();
+            }
+            currentLine.append(c);
+        }
+        if (currentLine.length() > 0) {
+            lines.add(currentLine.toString());
+        }
+
+        return lines.toArray(new String[0]);
     }
 
     private String truncate(String s, int maxPixelWidth) {
@@ -1179,11 +1329,51 @@ public class IdeEditorScreen extends Screen {
                 return true;
             }
             if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_DOWN) {
-                completionIndex = (completionIndex + 1) % completionCandidates.size();
+                if ((modifiers & org.lwjgl.glfw.GLFW.GLFW_MOD_CONTROL) != 0) {
+                    completionScrollOffset = Math.min(completionScrollOffset + 3, Math.max(0, completionCandidates.size() - 8));
+                    completionIndex = Math.min(completionIndex + 3, completionCandidates.size() - 1);
+                } else {
+                    completionIndex = (completionIndex + 1) % completionCandidates.size();
+                    if (completionIndex >= completionScrollOffset + 8) {
+                        completionScrollOffset = completionIndex - 7;
+                    }
+                }
                 return true;
             }
             if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_UP) {
-                completionIndex = (completionIndex - 1 + completionCandidates.size()) % completionCandidates.size();
+                if ((modifiers & org.lwjgl.glfw.GLFW.GLFW_MOD_CONTROL) != 0) {
+                    completionScrollOffset = Math.max(0, completionScrollOffset - 3);
+                    completionIndex = Math.max(0, completionIndex - 3);
+                } else {
+                    completionIndex = (completionIndex - 1 + completionCandidates.size()) % completionCandidates.size();
+                    if (completionIndex < completionScrollOffset) {
+                        completionScrollOffset = Math.max(0, completionIndex);
+                    }
+                }
+                return true;
+            }
+            if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_PAGE_DOWN) {
+                completionIndex = Math.min(completionIndex + 5, completionCandidates.size() - 1);
+                if (completionIndex >= completionScrollOffset + 8) {
+                    completionScrollOffset = Math.min(completionScrollOffset + 5, Math.max(0, completionCandidates.size() - 8));
+                }
+                return true;
+            }
+            if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_PAGE_UP) {
+                completionIndex = Math.max(0, completionIndex - 5);
+                if (completionIndex < completionScrollOffset) {
+                    completionScrollOffset = Math.max(0, completionScrollOffset - 5);
+                }
+                return true;
+            }
+            if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_HOME) {
+                completionIndex = 0;
+                completionScrollOffset = 0;
+                return true;
+            }
+            if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_END) {
+                completionIndex = completionCandidates.size() - 1;
+                completionScrollOffset = Math.max(0, completionCandidates.size() - 8);
                 return true;
             }
             if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE) {
@@ -1378,6 +1568,7 @@ public class IdeEditorScreen extends Screen {
             completionCandidates = List.of();
         }
         completionIndex = 0;
+        completionScrollOffset = 0;
         completionVisible = !completionCandidates.isEmpty();
     }
 
@@ -1490,6 +1681,21 @@ public class IdeEditorScreen extends Screen {
             }
         }
         // 编辑器点击：定位光标
+        if (completionVisible && completionPanelX > 0 && completionPanelY > 0) {
+            int panelWidth = COMPLETION_PANEL_W;
+            int itemCount = Math.min(completionCandidates.size(), 8);
+            int panelHeight = itemCount * COMPLETION_PANEL_H + 20;
+            if (lmx >= completionPanelX && lmx < completionPanelX + panelWidth &&
+                lmy >= completionPanelY && lmy < completionPanelY + panelHeight) {
+                int clickedIndex = completionScrollOffset + (int)((lmy - completionPanelY - 14) / COMPLETION_PANEL_H);
+                if (clickedIndex >= 0 && clickedIndex < completionCandidates.size()) {
+                    completionIndex = clickedIndex;
+                    applyCompletion();
+                    return true;
+                }
+            }
+        }
+
         int editorX = FILE_TREE_W + LINE_NUMBER_W + 4;
         int editorY = TOP_BAR_H + TAB_BAR_H;
         if (lmx >= editorX && lmx < ww && lmy >= editorY && lmy < wh - BOTTOM_BAR_H) {

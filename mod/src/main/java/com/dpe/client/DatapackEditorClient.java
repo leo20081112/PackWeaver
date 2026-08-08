@@ -3,8 +3,11 @@ package com.dpe.client;
 import com.dpe.common.block.EditorState;
 import com.dpe.common.config.UserConfig;
 import com.dpe.common.editor.DatapackExporter;
+import com.dpe.common.model.Project;
 import com.dpe.common.protocol.Message;
 import com.dpe.common.protocol.SyncStateMessage;
+import com.dpe.common.template.BuiltinTemplates;
+import com.dpe.common.template.DatapackTemplate;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
@@ -29,6 +32,8 @@ public final class DatapackEditorClient implements ClientModInitializer {
     private static final String DEFAULT_NAMESPACE = "dpe";
     /** 配置文件路径（相对游戏运行目录）。 */
     public static final String CONFIG_RELATIVE_PATH = "config/packweaver/config.json";
+    /** 项目存储目录相对路径。 */
+    private static final String PROJECTS_DIR = "config/packweaver/projects";
 
     private static KeyBinding openEditorKey;
     private static volatile UserConfig config;
@@ -60,14 +65,84 @@ public final class DatapackEditorClient implements ClientModInitializer {
         // 每客户端 tick 检测按键
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (openEditorKey != null && openEditorKey.wasPressed()) {
-                EditorState state = new EditorState();
-                if (state.getActiveDatapackNamespace() == null
-                        || state.getActiveDatapackNamespace().isBlank()) {
-                    state.setActiveDatapackNamespace(DEFAULT_NAMESPACE);
-                }
-                client.setScreen(openEditorSmart(state, client));
+                openEditor(client);
             }
         });
+    }
+
+    /**
+     * 打开编辑器入口：根据是否有当前项目决定显示向导还是编辑器。
+     */
+    public static void openEditor(MinecraftClient client) {
+        if (config() == null || !config().hasCurrentProject()) {
+            client.setScreen(new ProjectWizardScreen());
+            return;
+        }
+
+        Project currentProject = config().getCurrentProject();
+        EditorState state = new EditorState();
+        state.setActiveDatapackNamespace(currentProject.namespace());
+        state.setProjectId(currentProject.id());
+        client.setScreen(openEditorSmart(state, client));
+    }
+
+    /**
+     * 使用指定项目打开编辑器。
+     */
+    public static void openEditorWithProject(Project project) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null) return;
+
+        EditorState state = new EditorState();
+        state.setActiveDatapackNamespace(project.namespace());
+        state.setProjectId(project.id());
+        mc.setScreen(openEditorSmart(state, mc));
+    }
+
+    /**
+     * 使用指定项目和模板打开编辑器。
+     */
+    public static void openEditorWithProjectAndTemplate(Project project, String templateId) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null) return;
+
+        EditorState state = new EditorState();
+        state.setActiveDatapackNamespace(project.namespace());
+        state.setProjectId(project.id());
+        
+        DatapackTemplate template = BuiltinTemplates.byId(templateId);
+        if (template != null) {
+            EditorState preset = template.preset();
+            if (preset != null) {
+                for (var block : preset.getBlocks()) {
+                    state.addBlock(new com.dpe.common.block.EditorBlock(
+                            block.id(), block.schemaId(), block.x(), block.y(),
+                            new java.util.LinkedHashMap<>(block.fieldValues()),
+                            new java.util.ArrayList<>(block.childIds())
+                    ));
+                }
+                for (var block : preset.getBlocks()) {
+                    for (String childId : block.childIds()) {
+                        state.connect(block.id(), childId);
+                    }
+                }
+            }
+        }
+        
+        mc.setScreen(openEditorSmart(state, mc));
+    }
+
+    /**
+     * 获取指定项目的目录路径。
+     */
+    public static Path getProjectDirectory(String projectId) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.runDirectory == null) {
+            return null;
+        }
+        return mc.runDirectory.toPath()
+                .resolve(PROJECTS_DIR)
+                .resolve(projectId);
     }
 
     /**

@@ -54,10 +54,12 @@ public final class BlockCompiler {
     private void compileEvent(EditorState state, EditorBlock event, BlockSchemaRegistry reg,
                               String ns, Map<ResourceLocation, String> mcfunctions,
                               Map<ResourceLocation, String> jsonFiles) {
-        String path = eventFunctionPath(event.schemaId());
+        String path = eventFunctionPath(event.schemaId(), event.customName());
         ResourceLocation fnId = new ResourceLocation(ns, path);
         List<String> lines = new ArrayList<>();
-        lines.add("# 由 PackWeaver 编辑器生成 - 事件: " + event.schemaId());
+        String funcName = event.customName() != null && !event.customName().isBlank()
+                ? event.customName() : event.schemaId();
+        lines.add("# 由 PackWeaver 编辑器生成 - 事件: " + funcName);
 
         // 递归编译子块
         for (String childId : event.childIds()) {
@@ -208,8 +210,12 @@ public final class BlockCompiler {
         };
     }
 
-    /** 事件 schema id -> 函数路径（event.tick -> internal/tick）。 */
-    private String eventFunctionPath(String schemaId) {
+    /** 事件 schema id -> 函数路径（event.tick -> internal/tick）。优先使用 customName。 */
+    private String eventFunctionPath(String schemaId, String customName) {
+        if (customName != null && !customName.isBlank()) {
+            String safeName = customName.replaceAll("[^a-z0-9_/.-]", "_").toLowerCase();
+            return "internal/" + safeName;
+        }
         String suffix = schemaId.startsWith("event.") ? schemaId.substring("event.".length()) : schemaId;
         return "internal/" + suffix;
     }

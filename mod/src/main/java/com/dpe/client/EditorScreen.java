@@ -25,6 +25,7 @@ import org.lwjgl.glfw.GLFW;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -32,6 +33,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Scratch 风格积木编辑器主屏幕：
@@ -41,7 +44,29 @@ import java.util.Set;
  */
 public class EditorScreen extends Screen {
 
+    public static class EditorAction {
+        public enum ActionType {
+            ADD_BLOCK,
+            REMOVE_BLOCK,
+            MOVE_BLOCK,
+            CONNECT_BLOCK,
+            DISCONNECT_BLOCK,
+            UPDATE_FIELD,
+            SET_CUSTOM_NAME,
+            COLLAPSE_BLOCK
+        }
+        public ActionType type;
+        public String blockId;
+        public Object before;
+        public Object after;
+        public long timestamp;
+    }
+
+    private final ArrayDeque<EditorAction> undoStack = new ArrayDeque<>();
+    private final ArrayDeque<EditorAction> redoStack = new ArrayDeque<>();
+
     private static final int PALETTE_W = 140;
+    private static final int BLOCK_TREE_W = 180;
     private static final int FIELD_PANEL_W = 210;
     private static final int TOP_BAR_H = 22;
     private static final int BOTTOM_BAR_H = 24;
@@ -54,6 +79,8 @@ public class EditorScreen extends Screen {
     private final Canvas canvas;
 
     private String selectedId = null;
+    private final Set<String> selectedIds = new HashSet<>();
+    private final List<EditorBlock> clipboard = new ArrayList<>();
     private String draggingId = null;
     private double dragOffsetX = 0;
     private double dragOffsetY = 0;
@@ -83,6 +110,8 @@ public class EditorScreen extends Screen {
 
     /** 积木所属文件分组（Task 7）：blockId -> 组键（事件根 schemaId 或 "ungrouped"）。 */
     private final Map<String, String> blockFile = new HashMap<>();
+    /** 移动操作前的位置记录（blockId -> [x, y]）。 */
+    private final Map<String, double[]> moveStartPositions = new HashMap<>();
     /** 折叠的分组（仅显示标题栏）。 */
     private final Set<String> collapsedFiles = new HashSet<>();
     /** 隐藏的分组（标题栏与积木均不绘制）。 */
@@ -102,6 +131,50 @@ public class EditorScreen extends Screen {
     private final Set<BlockCategory> collapsedCategories = new HashSet<>();
     /** 调色板是否可见（P 切换）。 */
     private boolean paletteVisible = true;
+
+    /** 积木树侧边栏是否可见（B 切换）。 */
+    private boolean blockTreeVisible = false;
+    /** 积木树根节点列表（按文件/事件分组）。 */
+    private final List<BlockTreeNode> blockTreeRoots = new ArrayList<>();
+    /** 积木树节点缓存（渲染时填充，鼠标检测时复用）。 */
+    private final List<TreeNodeRect> treeNodeRects = new ArrayList<>();
+    /** 积木树滚动偏移。 */
+    private int treeScroll = 0;
+    /** 积木树搜索关键词。 */
+    private String treeSearchText = "";
+    /** 当前悬停的树节点。 */
+    private BlockTreeNode hoveredTreeNode = null;
+    /** 当前正在重命名的树节点。 */
+    private BlockTreeNode renamingTreeNode = null;
+    /** 重命名输入框。 */
+    private TextFieldWidget renameTextField = null;
+    /** 积木树搜索框。 */
+    private TextFieldWidget treeSearchField = null;
+    /** 双击检测：上次点击时间。 */
+    private long lastTreeClickTime = 0;
+    /** 双击检测：上次点击的节点。 */
+    private String lastTreeClickNodeId = null;
+    /** 双击归位：上次点击画布空白处的时间。 */
+    private long lastCanvasClickTime = 0;
+    /** 双击归位：上次点击画布空白处的坐标。 */
+    private double lastCanvasClickX = 0, lastCanvasClickY = 0;
+    /** 积木树节点：id / schemaId / 自定义名称 / 父节点 / 子节点列表 / 是否展开。 */
+    private static class BlockTreeNode {
+        String id;
+        String schemaId;
+        String customName;
+        BlockTreeNode parent;
+        List<BlockTreeNode> children = new ArrayList<>();
+        boolean expanded = true;
+        BlockTreeNode(String id, String schemaId, String customName) {
+            this.id = id;
+            this.schemaId = schemaId;
+            this.customName = customName;
+        }
+    }
+    /** 树节点屏幕矩形（用于鼠标命中检测）。 */
+    private record TreeNodeRect(BlockTreeNode node, int x, int y, int w, int h, int indent, boolean isGroup) {
+    }
 
     /** 调色板布局缓存（在 init/render 间复用）。 */
     private final List<PaletteRow> paletteRows = new ArrayList<>();
@@ -161,6 +234,153 @@ public class EditorScreen extends Screen {
         return window == null || window.fullscreen;
     }
 
+    /**
+     * 获取画布可见区域的世界坐标矩形
+     * @return [minX, minY, maxX, maxY]
+     */
+    private double[] getVisibleWorldRect() {
+        int canvasX0 = paletteVisible ? PALETTE_W : 0;
+        int canvasW = winW() - FIELD_PANEL_W - canvasX0;
+        int canvasH = winHContent() - BOTTOM_BAR_H - TOP_BAR_H;
+
+        double z = canvas.getZoom();
+        double panX = canvas.getPanX();
+        double panY = canvas.getPanY();
+
+        double minX = (canvasX0 - panX) / z;
+        double minY = (TOP_BAR_H - panY) / z;
+        double maxX = (canvasX0 + canvasW - panX) / z;
+        double maxY = (TOP_BAR_H + canvasH - panY) / z;
+
+        return new double[]{minX, minY, maxX, maxY};
+    }
+
+    /**
+     * 确保积木在可见区域内，如果完全在可见区域外则重新定位到中心
+     */
+    private void ensureBlockInView(EditorBlock block) {
+        double[] rect = getVisibleWorldRect();
+        double minX = rect[0], minY = rect[1], maxX = rect[2], maxY = rect[3];
+
+        double newX = block.x();
+        double newY = block.y();
+        int bh = blockHeight(reg.get(block.schemaId()));
+
+        if (newX + BLOCK_W < minX || newX > maxX || newY + bh < minY || newY > maxY) {
+            newX = (minX + maxX) / 2 - BLOCK_W / 2;
+            newY = (minY + maxY) / 2 - bh / 2;
+            state.moveBlock(block.id(), newX, newY);
+        }
+    }
+
+    /**
+     * 绘制边界指示器：当积木超出画布边界时显示指示器
+     */
+    private void drawBoundaryIndicators(DrawContext context) {
+        int canvasX0 = paletteVisible ? PALETTE_W : 0;
+        int canvasW = winW() - FIELD_PANEL_W - canvasX0;
+        int canvasH = winHContent() - BOTTOM_BAR_H - TOP_BAR_H;
+
+        double[] worldRect = getVisibleWorldRect();
+        double minX = worldRect[0], minY = worldRect[1],
+               maxX = worldRect[2], maxY = worldRect[3];
+
+        int indicatorSize = 8;
+        int arrowColor = 0xFFFFAA00;
+
+        for (EditorBlock block : state.getBlocks()) {
+            String gk = blockFile.getOrDefault(block.id(), "ungrouped");
+            if (hiddenFiles.contains(gk) || collapsedFiles.contains(gk)) {
+                continue;
+            }
+
+            BlockSchema schema = reg.get(block.schemaId());
+            int bh = blockHeight(schema);
+
+            boolean outLeft = block.x() < minX;
+            boolean outRight = block.x() + BLOCK_W > maxX;
+            boolean outTop = block.y() < minY;
+            boolean outBottom = block.y() + bh > maxY;
+
+            if (!outLeft && !outRight && !outTop && !outBottom) {
+                continue;
+            }
+
+            double z = canvas.getZoom();
+            double panX = canvas.getPanX();
+            double panY = canvas.getPanY();
+
+            if (outLeft) {
+                int sx = canvasX0;
+                int sy = (int) (TOP_BAR_H + block.y() * z + panY);
+                context.fill(sx, sy - indicatorSize, sx + indicatorSize, sy + indicatorSize, arrowColor);
+                context.drawTextWithShadow(this.textRenderer, Text.literal("◀"), sx + 1, sy - 4, 0xFF000000);
+            }
+            if (outRight) {
+                int sx = canvasX0 + canvasW - indicatorSize;
+                int sy = (int) (TOP_BAR_H + block.y() * z + panY);
+                context.fill(sx, sy - indicatorSize, sx + indicatorSize, sy + indicatorSize, arrowColor);
+                context.drawTextWithShadow(this.textRenderer, Text.literal("▶"), sx + 1, sy - 4, 0xFF000000);
+            }
+            if (outTop) {
+                int sx = canvasX0 + (int) (block.x() * z + panX);
+                int sy = TOP_BAR_H;
+                context.fill(sx - indicatorSize, sy, sx + indicatorSize, sy + indicatorSize, arrowColor);
+                context.drawTextWithShadow(this.textRenderer, Text.literal("▲"), sx - 3, sy + 1, 0xFF000000);
+            }
+            if (outBottom) {
+                int sx = canvasX0 + (int) (block.x() * z + panX);
+                int sy = TOP_BAR_H + canvasH - indicatorSize;
+                context.fill(sx - indicatorSize, sy, sx + indicatorSize, sy + indicatorSize, arrowColor);
+                context.drawTextWithShadow(this.textRenderer, Text.literal("▼"), sx - 3, sy + 1, 0xFF000000);
+            }
+        }
+    }
+
+    /**
+     * 一键归位：调整canvas的zoom和pan使所有积木可见
+     * 最小zoom为0.5，最大为2.0
+     */
+    private void fitAllBlocksInView() {
+        if (state.getBlocks().isEmpty()) {
+            return;
+        }
+
+        double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE;
+        double maxX = Double.MIN_VALUE, maxY = Double.MIN_VALUE;
+
+        for (EditorBlock b : state.getBlocks()) {
+            BlockSchema bs = reg.get(b.schemaId());
+            int bh = blockHeight(bs);
+            minX = Math.min(minX, b.x());
+            minY = Math.min(minY, b.y());
+            maxX = Math.max(maxX, b.x() + BLOCK_W);
+            maxY = Math.max(maxY, b.y() + bh);
+        }
+
+        int canvasX0 = paletteVisible ? PALETTE_W : 0;
+        int canvasW = winW() - FIELD_PANEL_W - canvasX0;
+        int canvasH = winHContent() - BOTTOM_BAR_H - TOP_BAR_H;
+
+        double contentW = maxX - minX;
+        double contentH = maxY - minY;
+        double padding = 40;
+
+        double zoomX = (canvasW - padding * 2) / contentW;
+        double zoomY = (canvasH - padding * 2) / contentH;
+        double newZoom = Math.min(Math.min(zoomX, zoomY), 2.0);
+        newZoom = Math.max(newZoom, 0.5);
+
+        double targetPanX = canvasX0 + (canvasW - contentW * newZoom) / 2 - minX * newZoom;
+        double targetPanY = TOP_BAR_H + (canvasH - contentH * newZoom) / 2 - minY * newZoom;
+
+        double currentZoom = canvas.getZoom();
+        canvas.zoomBy(newZoom / currentZoom);
+        canvas.panBy((int)(targetPanX - canvas.getPanX()), (int)(targetPanY - canvas.getPanY()));
+
+        setStatus("已归位视图");
+    }
+
     @Override
     protected void init() {
         fieldTextFields.clear();
@@ -211,6 +431,12 @@ public class EditorScreen extends Screen {
         bx += 42;
         addDrawableChild(ButtonWidget.builder(Text.literal("设置"), b -> openSettings())
                 .dimensions(bx, 2, 40, 16).build());
+        bx += 42;
+        addDrawableChild(ButtonWidget.builder(Text.literal("积木树 (B)"), b -> toggleBlockTree())
+                .dimensions(bx, 2, 72, 16).build());
+        bx += 74;
+        addDrawableChild(ButtonWidget.builder(Text.literal("归位"), b -> fitAllBlocksInView())
+                .dimensions(bx, 2, 40, 16).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("关闭"), b -> close())
                 .dimensions(ww - 50, 2, 46, 16).build());
 
@@ -225,9 +451,40 @@ public class EditorScreen extends Screen {
             BlockSchema schema = selected == null ? null : reg.get(selected.schemaId());
             if (schema != null) {
                 fy = drawFieldHeader(fx, fy, fw, schema, selected);
+                if (schema.category() == BlockCategory.EVENT) {
+                    fy = drawCustomNameWidget(fx, fy, fw, selected);
+                }
+                
+                List<BlockField> commonFields = new ArrayList<>();
+                List<BlockField> advancedFields = new ArrayList<>();
                 for (BlockField field : schema.fields()) {
+                    if (isCommonField(field.name()) || isAdvancedField(field)) {
+                        commonFields.add(field);
+                    } else {
+                        advancedFields.add(field);
+                    }
+                }
+                
+                for (BlockField field : commonFields) {
                     fy = drawFieldWidget(fx, fy, fw, field, selected);
                 }
+                
+                if (!advancedFields.isEmpty()) {
+                    String expandText = advancedFieldsExpanded ? "收起高级选项 ▲" : "显示更多选项 ▼";
+                    int finalFy = fy;
+                    addDrawableChild(ButtonWidget.builder(Text.literal(expandText), b -> {
+                        advancedFieldsExpanded = !advancedFieldsExpanded;
+                        clearAndInit();
+                    }).dimensions(fx, finalFy, fw, 14).build());
+                    fy += 16;
+                    
+                    if (advancedFieldsExpanded) {
+                        for (BlockField field : advancedFields) {
+                            fy = drawFieldWidget(fx, fy, fw, field, selected);
+                        }
+                    }
+                }
+                
                 fy += 6;
                 addDrawableChild(ButtonWidget.builder(
                                 Text.literal(linkMode ? "点子块..." : "连接子块"),
@@ -259,29 +516,183 @@ public class EditorScreen extends Screen {
                     .dimensions(ww - 30, wh - 30, 20, 20).build());
         }
 
+        // 全屏退出按钮（仅全屏模式显示）
+        if (window != null && window.fullscreen) {
+            addDrawableChild(ButtonWidget.builder(Text.literal("退出全屏"), b -> {
+                        toggleFullscreen();
+                        setStatus("已退出全屏模式");
+                    })
+                    .dimensions(4, 2, 60, 16).build());
+        }
+
+        // 积木树搜索框
+        if (blockTreeVisible) {
+            int treeX = paletteVisible ? PALETTE_W : 0;
+            int treeY = TOP_BAR_H;
+            int searchX = treeX + 4;
+            int searchY = treeY + 2;
+            treeSearchField = new TextFieldWidget(this.textRenderer, searchX, searchY, BLOCK_TREE_W - 8, 14, Text.literal("搜索"));
+            treeSearchField.setMaxLength(64);
+            treeSearchField.setText(treeSearchText);
+            treeSearchField.setChangedListener(s -> {
+                treeSearchText = s;
+                treeScroll = 0;
+            });
+            addDrawableChild(treeSearchField);
+        }
+
         rebuildPaletteRows();
     }
 
     /** 计算调色板行布局。 */
     private void rebuildPaletteRows() {
         paletteRows.clear();
-        for (BlockCategory cat : BlockCategory.values()) {
-            paletteRows.add(new PaletteRow(cat, null, true));
+        
+        BlockCategory[] sortedCategories = getSortedCategories();
+        
+        for (BlockCategory cat : sortedCategories) {
+            List<BlockSchema> schemas = reg.byCategory(cat);
+            int count = schemas.size();
+            paletteRows.add(new PaletteRow(cat, null, true, count));
+            
             if (!collapsedCategories.contains(cat)) {
-                for (BlockSchema s : reg.byCategory(cat)) {
-                    paletteRows.add(new PaletteRow(cat, s, false));
+                if (isAdvancedCategory(cat) && !userHasUsedAdvanced()) {
+                    continue;
+                }
+                for (BlockSchema s : schemas) {
+                    paletteRows.add(new PaletteRow(cat, s, false, 0));
                 }
             }
         }
     }
+    
+    /** 按使用频率排序分类：事件 > 动作 > 条件。 */
+    private BlockCategory[] getSortedCategories() {
+        return new BlockCategory[]{BlockCategory.EVENT, BlockCategory.ACTION, BlockCategory.CONDITION};
+    }
+    
+    /** 判断是否为高级分类。 */
+    private boolean isAdvancedCategory(BlockCategory cat) {
+        return cat == BlockCategory.CONDITION || cat == BlockCategory.ACTION;
+    }
+    
+    /** 检查用户是否使用过高级功能。 */
+    private boolean userHasUsedAdvanced() {
+        UserConfig cfg = DatapackEditorClient.config();
+        if (cfg == null) {
+            return false;
+        }
+        if (cfg.showAdvancedBlocks) {
+            return true;
+        }
+        for (EditorBlock b : state.getBlocks()) {
+            BlockSchema schema = reg.get(b.schemaId());
+            if (schema != null && isAdvancedCategory(schema.category())) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /** 调色板行：分类头或 schema 项。 */
-    private record PaletteRow(BlockCategory category, BlockSchema schema, boolean header) {
+    private record PaletteRow(BlockCategory category, BlockSchema schema, boolean header, int blockCount) {
+    }
+    
+    private boolean advancedFieldsExpanded = false;
+    
+    private boolean isCommonField(String fieldName) {
+        if (fieldName == null) return false;
+        String lower = fieldName.toLowerCase();
+        return lower.equals("target") || 
+               lower.equals("command") || 
+               lower.equals("message") ||
+               lower.equals("text") ||
+               lower.equals("function") ||
+               lower.equals("item") ||
+               lower.equals("entity") ||
+               lower.equals("block") ||
+               lower.equals("pos");
+    }
+    
+    private boolean isAdvancedField(BlockField field) {
+        if (field == null) return false;
+        return field.name().toLowerCase().contains("nbt") ||
+               field.name().toLowerCase().contains("score") ||
+               field.name().toLowerCase().contains("tag") ||
+               field.name().toLowerCase().contains("namespace") ||
+               field.name().toLowerCase().contains("count") ||
+               field.name().toLowerCase().contains("advanced");
+    }
+    
+    private String getBlockChineseDescription(String schemaId) {
+        if (schemaId == null) return null;
+        return switch (schemaId) {
+            case "event.tick" -> "每刻触发：游戏每个刻都会执行一次";
+            case "event.load" -> "数据包加载：数据包加载时执行一次";
+            case "event.player_join" -> "玩家加入：玩家进入服务器时执行";
+            case "event.entity_death" -> "实体死亡：实体死亡时执行";
+            case "condition.score_compare" -> "记分板比较：检查玩家的记分板数值";
+            case "condition.entity_exists" -> "实体存在：检查指定类型实体是否存在";
+            case "condition.random_chance" -> "随机概率：按指定概率随机通过";
+            case "action.run_function" -> "运行函数：执行指定的数据包函数";
+            case "action.say_text" -> "说话文本：向所有玩家发送聊天消息";
+            case "action.set_block" -> "放置方块：在指定位置放置方块";
+            case "action.give_item" -> "给予物品：给予玩家指定物品";
+            case "action.summon" -> "召唤实体：在指定位置召唤实体";
+            case "action.tag_add" -> "添加标签：为实体添加标签";
+            case "action.tellraw" -> "原始消息：发送带样式的JSON消息";
+            case "raw_text" -> "原始文本：直接输出命令或注释";
+            default -> null;
+        };
+    }
+    
+    private String getFieldChineseDescription(String fieldName, String schemaId) {
+        if (fieldName == null) return null;
+        String lower = fieldName.toLowerCase();
+        String desc = switch (lower) {
+            case "target" -> "目标玩家/实体";
+            case "command" -> "要执行的命令";
+            case "message", "text" -> "要显示的文本内容";
+            case "function" -> "数据包函数路径";
+            case "item" -> "物品ID（如 minecraft:diamond_sword）";
+            case "entity", "entity_type" -> "实体类型ID";
+            case "block" -> "方块ID（如 minecraft:stone）";
+            case "pos" -> "坐标位置（~ ~ ~）";
+            case "objective" -> "记分板目标名称";
+            case "op" -> "比较操作符（> < = ≥ ≤）";
+            case "value", "count" -> "数值或数量";
+            case "nbt" -> "NBT数据标签";
+            case "score" -> "记分板分数";
+            case "tag" -> "自定义标签";
+            case "namespace" -> "命名空间";
+            case "entry" -> "标签条目";
+            default -> null;
+        };
+        if (desc != null && schemaId != null && schemaId.contains("tellraw")) {
+            if (lower.equals("text")) {
+                desc = "JSON格式的文本组件";
+            }
+        }
+        return desc;
     }
 
     private int drawFieldHeader(int x, int y, int w, BlockSchema schema, EditorBlock block) {
         addDrawableChild(ButtonWidget.builder(Text.literal(schema.label()), b -> {})
                 .dimensions(x, y, w, 14).build());
+        return y + 16;
+    }
+
+    private int drawCustomNameWidget(int x, int y, int w, EditorBlock block) {
+        String curStr = block.customName() != null ? block.customName() : "";
+        TextFieldWidget tf = new TextFieldWidget(this.textRenderer, x, y, w, 14, Text.literal("函数名"));
+        tf.setMaxLength(64);
+        tf.setText(curStr);
+        tf.setPlaceholder(Text.literal("函数名（可选）"));
+        tf.setChangedListener(s -> {
+            state.setCustomName(block.id(), s.isBlank() ? null : s.trim());
+        });
+        fieldTextFields.put("customName", tf);
+        addDrawableChild(tf);
         return y + 16;
     }
 
@@ -366,8 +777,33 @@ public class EditorScreen extends Screen {
             return;
         }
         String id = "b" + (++blockCounter);
-        // 蛇形网格布局：纵向延伸 y，列满换列；查找空闲格子（与已有积木矩形不相交）
-        double[] pos = findFreeGridCell(schema);
+        int bh = blockHeight(schema);
+
+        double[] pos;
+        if (selectedId != null) {
+            EditorBlock selected = state.getById(selectedId);
+            if (selected != null) {
+                double targetX = selected.x() + BLOCK_W + 10;
+                double targetY = selected.y();
+                if (!intersectsExisting(targetX, targetY, BLOCK_W, bh)) {
+                    pos = new double[]{targetX, targetY};
+                } else {
+                    pos = findFreeGridCellInArea(schema, targetX - GRID_W * 2, targetY - GRID_H * 2, targetX + GRID_W * 2, targetY + GRID_H * 2);
+                }
+            } else {
+                pos = findFreeGridCell(schema);
+            }
+        } else {
+            double[] rect = getVisibleWorldRect();
+            double centerX = (rect[0] + rect[2]) / 2 - BLOCK_W / 2;
+            double centerY = (rect[1] + rect[3]) / 2 - bh / 2;
+            if (!intersectsExisting(centerX, centerY, BLOCK_W, bh)) {
+                pos = new double[]{centerX, centerY};
+            } else {
+                pos = findFreeGridCellInArea(schema, centerX - GRID_W * 2, centerY - GRID_H * 2, centerX + GRID_W * 2, centerY + GRID_H * 2);
+            }
+        }
+
         EditorBlock block = new EditorBlock(id, schemaId, pos[0], pos[1]);
         for (BlockField f : schema.fields()) {
             if (f.defaultValue() != null) {
@@ -377,8 +813,47 @@ public class EditorScreen extends Screen {
         state.addBlock(block);
         selectedId = id;
         linkMode = false;
+        ensureBlockInView(block);
+
+        EditorAction action = new EditorAction();
+        action.type = EditorAction.ActionType.ADD_BLOCK;
+        action.blockId = id;
+        action.after = block;
+        recordAction(action);
+
         setStatus("已添加: " + schema.label());
         clearAndInit();
+    }
+
+    /**
+     * 在指定区域内查找空闲网格格
+     * @return {x, y} 世界坐标
+     */
+    private double[] findFreeGridCellInArea(BlockSchema schema, double minX, double minY, double maxX, double maxY) {
+        int bh = blockHeight(schema);
+        int maxRows = 8;
+        double startCol = (int) ((minX - GRID_START_X) / GRID_W);
+        double startRow = (int) ((minY - GRID_START_Y) / GRID_H);
+        if (startCol < 0) startCol = 0;
+        if (startRow < 0) startRow = 0;
+        int endCol = (int) ((maxX - GRID_START_X) / GRID_W) + 1;
+        int endRow = (int) ((maxY - GRID_START_Y) / GRID_H) + 1;
+
+        for (int row = (int) startRow; row < endRow + maxRows; row++) {
+            int col = (int) startCol;
+            while (col < endCol) {
+                double x = GRID_START_X + col * GRID_W;
+                double y = GRID_START_Y + row * GRID_H;
+                if (x >= minX && x <= maxX && y >= minY && y <= maxY && !intersectsExisting(x, y, BLOCK_W, bh)) {
+                    return new double[]{x, y};
+                }
+                col++;
+            }
+            if (row >= endRow) {
+                break;
+            }
+        }
+        return findFreeGridCell(schema);
     }
 
     /**
@@ -506,6 +981,126 @@ public class EditorScreen extends Screen {
         return schema != null ? schema.label() : groupKey;
     }
 
+    /**
+     * 重建积木树：按事件根分组构建树形结构。
+     * 根节点为事件块，其子节点为该事件下的所有积木。
+     */
+    private void rebuildBlockTree() {
+        blockTreeRoots.clear();
+        if (state.getBlocks().isEmpty()) {
+            return;
+        }
+        Map<String, String> parentOf = new HashMap<>();
+        for (EditorBlock b : state.getBlocks()) {
+            for (String childId : b.childIds()) {
+                parentOf.put(childId, b.id());
+            }
+        }
+        Map<String, BlockTreeNode> nodeMap = new HashMap<>();
+        for (EditorBlock b : state.getBlocks()) {
+            String customName = b.customName();
+            nodeMap.put(b.id(), new BlockTreeNode(b.id(), b.schemaId(), customName));
+        }
+        for (EditorBlock b : state.getBlocks()) {
+            BlockTreeNode node = nodeMap.get(b.id());
+            if (node == null) continue;
+            String cur = b.id();
+            String rootId = cur;
+            Set<String> visited = new HashSet<>();
+            while (parentOf.containsKey(cur) && visited.add(cur)) {
+                cur = parentOf.get(cur);
+                rootId = cur;
+            }
+            EditorBlock root = state.getById(rootId);
+            if (root != null) {
+                BlockSchema rootSchema = reg.get(root.schemaId());
+                if (rootSchema != null && rootSchema.category() == BlockCategory.EVENT) {
+                    if (!b.id().equals(rootId)) {
+                        BlockTreeNode parentNode = nodeMap.get(rootId);
+                        if (parentNode != null) {
+                            node.parent = parentNode;
+                            parentNode.children.add(node);
+                        }
+                    }
+                }
+            }
+        }
+        Set<String> rootIds = new HashSet<>();
+        for (EditorBlock b : state.getBlocks()) {
+            String cur = b.id();
+            String rootId = cur;
+            Set<String> visited = new HashSet<>();
+            while (parentOf.containsKey(cur) && visited.add(cur)) {
+                cur = parentOf.get(cur);
+                rootId = cur;
+            }
+            EditorBlock root = state.getById(rootId);
+            if (root != null) {
+                BlockSchema rootSchema = reg.get(root.schemaId());
+                if (rootSchema != null && rootSchema.category() == BlockCategory.EVENT) {
+                    rootIds.add(rootId);
+                } else if (!rootIds.contains(b.id())) {
+                    rootIds.add(b.id());
+                }
+            } else if (!rootIds.contains(b.id())) {
+                rootIds.add(b.id());
+            }
+        }
+        for (String rid : rootIds) {
+            BlockTreeNode node = nodeMap.get(rid);
+            if (node != null) {
+                blockTreeRoots.add(node);
+            }
+        }
+    }
+
+    /** 根据搜索关键词过滤树节点。 */
+    private boolean matchesSearch(BlockTreeNode node) {
+        if (treeSearchText == null || treeSearchText.isEmpty()) {
+            return true;
+        }
+        BlockSchema schema = reg.get(node.schemaId);
+        String label = schema == null ? node.schemaId : schema.label();
+        String name = node.customName != null && !node.customName.isEmpty() ? node.customName : label;
+        String searchText = treeSearchText;
+        // 检查是否是正则表达式（包含特殊正则字符）
+        boolean isRegex = searchText.matches(".*[\\\\\\.\\+\\*\\?\\[\\]\\{\\}\\(\\)\\^\\$\\|].*");
+        if (isRegex) {
+            try {
+                Pattern pattern = Pattern.compile(searchText, Pattern.CASE_INSENSITIVE);
+                return pattern.matcher(name).find() || pattern.matcher(node.schemaId).find();
+            } catch (PatternSyntaxException e) {
+                // 无效正则，回退到普通搜索
+                String lower = searchText.toLowerCase();
+                return name.toLowerCase().contains(lower) || node.schemaId.toLowerCase().contains(lower);
+            }
+        } else {
+            String lower = searchText.toLowerCase();
+            return name.toLowerCase().contains(lower) || node.schemaId.toLowerCase().contains(lower);
+        }
+    }
+
+    /** 统计可见节点数量（包括符合条件的子节点）。 */
+    private int countVisibleNodes(BlockTreeNode node, int depth) {
+        if (!matchesSearch(node)) {
+            if (node.children.isEmpty()) {
+                return 0;
+            }
+            int count = 0;
+            for (BlockTreeNode child : node.children) {
+                count += countVisibleNodes(child, depth + 1);
+            }
+            return count;
+        }
+        int count = 1;
+        if (node.expanded && !node.children.isEmpty()) {
+            for (BlockTreeNode child : node.children) {
+                count += countVisibleNodes(child, depth + 1);
+            }
+        }
+        return count;
+    }
+
     /** 绘制每个分组的标题栏（折叠/隐藏按钮），并填充 {@link #groupHeaders} 供命中检测。 */
     private void drawGroupHeaders(DrawContext context) {
         groupHeaders.clear();
@@ -576,11 +1171,111 @@ public class EditorScreen extends Screen {
         if (selectedId == null) {
             return;
         }
+
+        EditorAction action = new EditorAction();
+        action.type = EditorAction.ActionType.REMOVE_BLOCK;
+        action.blockId = selectedId;
+        action.before = state.getById(selectedId);
+        recordAction(action);
+
         state.removeBlock(selectedId);
         selectedId = null;
         linkMode = false;
         setStatus("积木已删除");
         clearAndInit();
+    }
+
+    private void deleteSelectedBlocks() {
+        if (selectedIds.isEmpty() && selectedId == null) {
+            setStatus("未选中任何积木");
+            return;
+        }
+        int count = selectedIds.size();
+        if (selectedId != null && !selectedIds.contains(selectedId)) {
+            count++;
+        }
+
+        for (String id : new ArrayList<>(selectedIds)) {
+            EditorAction action = new EditorAction();
+            action.type = EditorAction.ActionType.REMOVE_BLOCK;
+            action.blockId = id;
+            action.before = state.getById(id);
+            recordAction(action);
+            state.removeBlock(id);
+        }
+        if (selectedId != null && selectedIds.contains(selectedId)) {
+            EditorAction action = new EditorAction();
+            action.type = EditorAction.ActionType.REMOVE_BLOCK;
+            action.blockId = selectedId;
+            action.before = state.getById(selectedId);
+            recordAction(action);
+            state.removeBlock(selectedId);
+        }
+        selectedIds.clear();
+        selectedId = null;
+        linkMode = false;
+        setStatus("已删除 " + count + " 个积木");
+        clearAndInit();
+    }
+
+    private void copySelectedBlocks() {
+        if (selectedIds.isEmpty() && selectedId == null) {
+            setStatus("未选中任何积木");
+            return;
+        }
+        clipboard.clear();
+        Set<String> toCopy = new HashSet<>(selectedIds);
+        if (selectedId != null && !toCopy.contains(selectedId)) {
+            toCopy.add(selectedId);
+        }
+        for (String id : toCopy) {
+            EditorBlock block = state.getById(id);
+            if (block != null) {
+                clipboard.add(block.copy());
+            }
+        }
+        setStatus("已复制 " + clipboard.size() + " 个积木");
+    }
+
+    private void pasteBlocks() {
+        if (clipboard.isEmpty()) {
+            setStatus("剪贴板为空");
+            return;
+        }
+        double offsetX = 20;
+        double offsetY = 20;
+        for (EditorBlock block : clipboard) {
+            String newId = "b" + (++blockCounter);
+            EditorBlock newBlock = new EditorBlock(newId, block.schemaId(), 
+                block.x() + offsetX, block.y() + offsetY, 
+                new HashMap<>(block.fieldValues()), new ArrayList<>(block.childIds()),
+                block.customName(), block.collapsed());
+            state.addBlock(newBlock);
+            offsetX += 20;
+            offsetY += 20;
+        }
+        setStatus("已粘贴 " + clipboard.size() + " 个积木");
+        clearAndInit();
+    }
+
+    private void selectAllBlocks() {
+        selectedIds.clear();
+        for (EditorBlock block : state.getBlocks()) {
+            selectedIds.add(block.id());
+        }
+        selectedId = selectedIds.isEmpty() ? null : selectedIds.iterator().next();
+        setStatus("已全选 " + selectedIds.size() + " 个积木");
+        clearAndInit();
+    }
+
+    private void toggleBlockCollapsed(String blockId) {
+        EditorBlock block = state.getById(blockId);
+        if (block != null) {
+            boolean newCollapsed = !block.collapsed();
+            state.setCollapsed(blockId, newCollapsed);
+            setStatus(newCollapsed ? "已折叠积木" : "已展开积木");
+            clearAndInit();
+        }
     }
 
     /** 复制玩家/准星坐标到选中积木的 pos 字段（Task 9）。 */
@@ -715,10 +1410,22 @@ public class EditorScreen extends Screen {
         if (window == null) {
             return;
         }
+        boolean wasFullscreen = window.fullscreen;
         window.toggleFullscreen(this.width, this.height);
         DatapackEditorClient.saveConfig();
+        for (EditorBlock block : state.getBlocks()) {
+            ensureBlockInView(block);
+        }
+        // 全屏进入时显示提示
+        if (!wasFullscreen && window.fullscreen) {
+            fullscreenHintTime = System.currentTimeMillis();
+        }
         clearAndInit();
     }
+
+    /** 全屏提示显示时间戳。 */
+    private long fullscreenHintTime = 0;
+    private static final long FULLSCREEN_HINT_DURATION = 3000; // 3秒
 
     private void showCompilePreview() {
         syncViewToState();
@@ -794,6 +1501,156 @@ public class EditorScreen extends Screen {
         statusMessageTime = System.currentTimeMillis();
     }
 
+    private void recordAction(EditorAction action) {
+        action.timestamp = System.currentTimeMillis();
+        undoStack.push(action);
+        redoStack.clear();
+    }
+
+    private void undo() {
+        if (undoStack.isEmpty()) {
+            setStatus("没有可撤销的操作");
+            return;
+        }
+        EditorAction action = undoStack.pop();
+        redoStack.push(action);
+
+        switch (action.type) {
+            case ADD_BLOCK:
+                state.removeBlock(action.blockId);
+                if (selectedId != null && selectedId.equals(action.blockId)) {
+                    selectedId = null;
+                }
+                selectedIds.remove(action.blockId);
+                setStatus("已撤销：添加积木");
+                break;
+            case REMOVE_BLOCK:
+                state.addBlock((EditorBlock) action.before);
+                setStatus("已撤销：删除积木");
+                break;
+            case MOVE_BLOCK:
+                EditorBlock block = state.getById(action.blockId);
+                if (block != null) {
+                    double oldX = (double) ((Object[]) action.before)[0];
+                    double oldY = (double) ((Object[]) action.before)[1];
+                    state.moveBlock(action.blockId, oldX, oldY);
+                }
+                setStatus("已撤销：移动积木");
+                break;
+            case CONNECT_BLOCK:
+                String parentId = (String) ((Object[]) action.before)[0];
+                String childId = (String) ((Object[]) action.before)[1];
+                state.disconnect(parentId, childId);
+                setStatus("已撤销：连接积木");
+                break;
+            case DISCONNECT_BLOCK:
+                String pId = (String) ((Object[]) action.after)[0];
+                String cId = (String) ((Object[]) action.after)[1];
+                state.connect(pId, cId);
+                setStatus("已撤销：断开连接");
+                break;
+            case UPDATE_FIELD:
+                EditorBlock fb = state.getById(action.blockId);
+                if (fb != null) {
+                    String fieldName = (String) ((Object[]) action.before)[0];
+                    Object oldValue = ((Object[]) action.before)[1];
+                    fb.fieldValues().put(fieldName, oldValue);
+                }
+                setStatus("已撤销：修改字段");
+                break;
+            case SET_CUSTOM_NAME:
+                EditorBlock cb = state.getById(action.blockId);
+                if (cb != null) {
+                    String oldName = (String) action.before;
+                    state.setCustomName(action.blockId, oldName);
+                }
+                setStatus("已撤销：设置名称");
+                break;
+            case COLLAPSE_BLOCK:
+                EditorBlock clb = state.getById(action.blockId);
+                if (clb != null) {
+                    boolean wasCollapsed = (Boolean) action.before;
+                    state.setCollapsed(action.blockId, wasCollapsed);
+                }
+                setStatus("已撤销：折叠状态");
+                break;
+        }
+        clearAndInit();
+    }
+
+    private void redo() {
+        if (redoStack.isEmpty()) {
+            setStatus("没有可重做的操作");
+            return;
+        }
+        EditorAction action = redoStack.pop();
+        undoStack.push(action);
+
+        switch (action.type) {
+            case ADD_BLOCK:
+                state.addBlock((EditorBlock) action.after);
+                setStatus("已重做：添加积木");
+                break;
+            case REMOVE_BLOCK:
+                state.removeBlock(action.blockId);
+                if (selectedId != null && selectedId.equals(action.blockId)) {
+                    selectedId = null;
+                }
+                selectedIds.remove(action.blockId);
+                setStatus("已重做：删除积木");
+                break;
+            case MOVE_BLOCK:
+                double newX = (double) ((Object[]) action.after)[0];
+                double newY = (double) ((Object[]) action.after)[1];
+                state.moveBlock(action.blockId, newX, newY);
+                setStatus("已重做：移动积木");
+                break;
+            case CONNECT_BLOCK:
+                String parentId = (String) ((Object[]) action.after)[0];
+                String childId = (String) ((Object[]) action.after)[1];
+                state.connect(parentId, childId);
+                setStatus("已重做：连接积木");
+                break;
+            case DISCONNECT_BLOCK:
+                String pId = (String) ((Object[]) action.before)[0];
+                String cId = (String) ((Object[]) action.before)[1];
+                state.disconnect(pId, cId);
+                setStatus("已重做：断开连接");
+                break;
+            case UPDATE_FIELD:
+                EditorBlock fb = state.getById(action.blockId);
+                if (fb != null) {
+                    String fieldName = (String) ((Object[]) action.after)[0];
+                    Object newValue = ((Object[]) action.after)[1];
+                    fb.fieldValues().put(fieldName, newValue);
+                }
+                setStatus("已重做：修改字段");
+                break;
+            case SET_CUSTOM_NAME:
+                EditorBlock cb = state.getById(action.blockId);
+                if (cb != null) {
+                    String newName = (String) action.after;
+                    state.setCustomName(action.blockId, newName);
+                }
+                setStatus("已重做：设置名称");
+                break;
+            case COLLAPSE_BLOCK:
+                EditorBlock clb = state.getById(action.blockId);
+                if (clb != null) {
+                    boolean isCollapsed = (Boolean) action.after;
+                    state.setCollapsed(action.blockId, isCollapsed);
+                }
+                setStatus("已重做：折叠状态");
+                break;
+        }
+        clearAndInit();
+    }
+
+    private void toggleBlockTree() {
+        blockTreeVisible = !blockTreeVisible;
+        setStatus(blockTreeVisible ? "已显示积木树" : "已隐藏积木树");
+    }
+
     /** 接收服务端同步的编辑器状态。 */
     public void applySync(String json, long revision) {
         try {
@@ -860,13 +1717,18 @@ public class EditorScreen extends Screen {
         if (paletteVisible) {
             drawPalette(context, lmx, lmy);
         }
+        // 积木树侧边栏（自绘）
+        if (blockTreeVisible) {
+            drawBlockTree(context, lmx, lmy);
+        }
 
         // 画布网格
         drawCanvasGrid(context);
         // 连线
         drawConnections(context);
+        // 边界指示器
+        drawBoundaryIndicators(context);
         // 重建分组关联（Task 7）
-        rebuildGroups();
         // 积木块（跳过隐藏/折叠分组的块，但折叠时仍画标题栏）
         for (EditorBlock block : state.getBlocks()) {
             String gk = blockFile.getOrDefault(block.id(), "ungrouped");
@@ -894,6 +1756,11 @@ public class EditorScreen extends Screen {
 
         // 状态消息
         drawStatus(context);
+
+        // 全屏模式提示（3秒后自动消失）
+        if (window != null && window.fullscreen) {
+            drawFullscreenHint(context);
+        }
 
         // 画布边界
         context.drawBorder(canvasX0 - 1, TOP_BAR_H - 1, ww - FIELD_PANEL_W - canvasX0 + 2,
@@ -965,7 +1832,6 @@ public class EditorScreen extends Screen {
         int top = TOP_BAR_H + 2;
         int bottom = winHContent() - BOTTOM_BAR_H;
         int y = top - paletteScroll;
-        // 裁剪范围（简单：超出 bottom 不绘制）
         for (PaletteRow row : paletteRows) {
             int h = row.header ? PALETTE_HEADER_H : PALETTE_ROW_H;
             int ry = y;
@@ -973,17 +1839,23 @@ public class EditorScreen extends Screen {
                 if (row.header) {
                     boolean collapsed = collapsedCategories.contains(row.category);
                     String prefix = collapsed ? "[+] " : "[-] ";
-                    String label = prefix + categoryLabel(row.category);
-                    // 头部背景
+                    String countStr = row.blockCount() > 0 ? " (" + row.blockCount() + ")" : "";
+                    String label = prefix + categoryLabel(row.category) + countStr;
+                    boolean isAdvanced = isAdvancedCategory(row.category());
+                    int textColor = isAdvanced && !userHasUsedAdvanced() ? 0xFF888888 : 0xFFCCCCCC;
                     context.fill(2, ry, PALETTE_W - 2, ry + h, 0xFF333333);
                     context.drawTextWithShadow(this.textRenderer, Text.literal(label),
-                            4, ry + 3, 0xFFCCCCCC);
+                            4, ry + 3, textColor);
+                    if (isAdvanced && !userHasUsedAdvanced()) {
+                        context.drawTextWithShadow(this.textRenderer, Text.literal(" [高级]"),
+                                4 + this.textRenderer.getWidth(prefix + categoryLabel(row.category) + countStr), 
+                                ry + 3, 0xFFFFAA00);
+                    }
                 } else if (row.schema != null) {
                     boolean hover = mouseX >= 2 && mouseX < PALETTE_W - 2
                             && mouseY >= ry && mouseY < ry + h;
                     int bg = hover ? 0xFF094771 : 0xFF2D2D2D;
                     context.fill(4, ry, PALETTE_W - 4, ry + h, bg);
-                    // 颜色点
                     int dot = parseColor(row.schema.color(), 0xFF888888);
                     context.fill(6, ry + 3, 10, ry + 9, dot);
                     String label = truncate(row.schema.label(), PALETTE_W - 18);
@@ -993,7 +1865,6 @@ public class EditorScreen extends Screen {
             }
             y += h;
         }
-        // 滚动条
         int totalH = totalPaletteHeight();
         int visibleH = bottom - top;
         if (totalH > visibleH) {
@@ -1001,6 +1872,193 @@ public class EditorScreen extends Screen {
             int barY = top + (int) ((long) paletteScroll * (visibleH - barH) / Math.max(1, totalH - visibleH));
             context.fill(PALETTE_W - 4, barY, PALETTE_W - 2, barY + barH, 0xFF666666);
         }
+    }
+
+    private void drawBlockTree(DrawContext context, int mouseX, int mouseY) {
+        if (!blockTreeVisible) {
+            return;
+        }
+        int treeX = paletteVisible ? PALETTE_W : 0;
+        int treeY = TOP_BAR_H;
+        int treeH = winHContent() - BOTTOM_BAR_H - TOP_BAR_H;
+        rebuildBlockTree();
+        context.fill(treeX, treeY, treeX + BLOCK_TREE_W, treeY + treeH, 0xFF252526);
+        context.drawBorder(treeX, treeY, BLOCK_TREE_W, treeH, 0xFF444444);
+        int searchBoxH = 14;
+        treeNodeRects.clear();
+        int nodeStartY = treeY + searchBoxH + 6 - treeScroll;
+        hoveredTreeNode = null;
+        for (BlockTreeNode root : blockTreeRoots) {
+            int rendered = drawTreeNode(context, root, treeX, nodeStartY, 0, mouseX, mouseY, treeSearchText);
+            nodeStartY += rendered;
+        }
+        int totalNodes = 0;
+        for (BlockTreeNode root : blockTreeRoots) {
+            totalNodes += countVisibleNodes(root, 0);
+        }
+        int totalTreeH = totalNodes * 14 + 4;
+        if (totalTreeH > treeH - searchBoxH - 8) {
+            int barH = Math.max(20, (treeH - searchBoxH - 8) * (treeH - searchBoxH - 8) / totalTreeH);
+            int maxScroll = totalTreeH - (treeH - searchBoxH - 8);
+            int barY = treeY + searchBoxH + 6 + (int) ((long) treeScroll * ((treeH - searchBoxH - 8) - barH) / Math.max(1, maxScroll));
+            context.fill(treeX + BLOCK_TREE_W - 4, barY, treeX + BLOCK_TREE_W - 2, barY + barH, 0xFF666666);
+        }
+        // 显示搜索匹配数量
+        if (treeSearchText != null && !treeSearchText.isEmpty()) {
+            int matchCount = countSearchMatches();
+            String countText = "匹配: " + matchCount;
+            context.drawTextWithShadow(this.textRenderer, Text.literal(countText), treeX + 4, treeY + searchBoxH - 10, 0xFF888888);
+        }
+    }
+    
+    /** 统计搜索匹配的节点总数。 */
+    private int countSearchMatches() {
+        int count = 0;
+        for (BlockTreeNode root : blockTreeRoots) {
+            count += countMatchesInSubtree(root);
+        }
+        return count;
+    }
+    
+    private int countMatchesInSubtree(BlockTreeNode node) {
+        int c = matchesSearch(node) ? 1 : 0;
+        for (BlockTreeNode child : node.children) {
+            c += countMatchesInSubtree(child);
+        }
+        return c;
+    }
+
+    private int drawTreeNode(DrawContext context, BlockTreeNode node, int treeX, int y, int depth, int mouseX, int mouseY, String search) {
+        if (!matchesSearch(node)) {
+            return 0;
+        }
+        int nodeH = 14;
+        int indent = depth * 12;
+        int textX = treeX + 4 + indent;
+        boolean isGroup = node.parent == null || node.children.isEmpty();
+        boolean hover = mouseX >= textX && mouseX < treeX + BLOCK_TREE_W && mouseY >= y && mouseY < y + nodeH;
+        if (hover) {
+            hoveredTreeNode = node;
+        }
+        int bgColor = hover ? 0xFF3A5A8A : (selectedId != null && selectedId.equals(node.id) ? 0xFF4A4A6A : 0x00000000);
+        if (bgColor != 0x00000000) {
+            context.fill(treeX + 2, y, treeX + BLOCK_TREE_W - 2, y + nodeH, bgColor);
+        }
+        String expandIcon = "";
+        if (!node.children.isEmpty()) {
+            expandIcon = node.expanded ? "▼ " : "▶ ";
+        }
+        String label = getNodeLabel(node);
+        context.drawTextWithShadow(this.textRenderer, Text.literal(expandIcon), textX + 4, y + 2, 0xFF888888);
+        if (!search.isEmpty() && label.toLowerCase().contains(search.toLowerCase())) {
+            drawHighlightedText(context, label, search, textX + 16, y + 2, 0xFFFFFFFF);
+        } else {
+            context.drawTextWithShadow(this.textRenderer, Text.literal(label), textX + 16, y + 2, isGroup ? 0xFFAAAAAA : 0xFFFFFFFF);
+        }
+        treeNodeRects.add(new TreeNodeRect(node, textX, y, BLOCK_TREE_W - 4 - indent, nodeH, indent, isGroup));
+        int totalH = nodeH;
+        if (node.expanded && !node.children.isEmpty()) {
+            int childY = y + nodeH;
+            for (BlockTreeNode child : node.children) {
+                int rendered = drawTreeNode(context, child, treeX, childY, depth + 1, mouseX, mouseY, search);
+                childY += rendered;
+                totalH += rendered;
+            }
+        }
+        return totalH;
+    }
+
+    private String getNodeLabel(BlockTreeNode node) {
+        if (node.customName != null && !node.customName.isEmpty()) {
+            return node.customName;
+        }
+        BlockSchema schema = reg.get(node.schemaId);
+        return schema == null ? node.schemaId : schema.label();
+    }
+
+    private void drawHighlightedText(DrawContext context, String text, String highlight, int x, int y, int baseColor) {
+        int hl = highlight.length();
+        int idx = text.toLowerCase().indexOf(highlight.toLowerCase());
+        if (idx < 0) {
+            context.drawTextWithShadow(this.textRenderer, Text.literal(text), x, y, baseColor);
+            return;
+        }
+        String before = text.substring(0, idx);
+        String match = text.substring(idx, idx + hl);
+        String after = text.substring(idx + hl);
+        int curX = x;
+        if (!before.isEmpty()) {
+            context.drawTextWithShadow(this.textRenderer, Text.literal(before), curX, y, 0xFF888888);
+            curX += this.textRenderer.getWidth(before);
+        }
+        context.drawTextWithShadow(this.textRenderer, Text.literal(match), curX, y, 0xFFFFFF00);
+        curX += this.textRenderer.getWidth(match);
+        if (!after.isEmpty()) {
+            context.drawTextWithShadow(this.textRenderer, Text.literal(after), curX, y, baseColor);
+        }
+    }
+
+    private void centerOnBlock(String blockId) {
+        EditorBlock block = state.getById(blockId);
+        if (block == null) {
+            return;
+        }
+        int canvasX0 = paletteVisible ? PALETTE_W : 0;
+        int canvasW = winW() - FIELD_PANEL_W - canvasX0;
+        int canvasH = winHContent() - BOTTOM_BAR_H - TOP_BAR_H;
+        double z = canvas.getZoom();
+        double targetPanX = (canvasX0 + canvasW / 2.0) - (block.x() + BLOCK_W / 2.0) * z;
+        double targetPanY = (TOP_BAR_H + canvasH / 2.0) - (block.y() + blockHeight(reg.get(block.schemaId())) / 2.0) * z;
+        canvas.panBy(targetPanX - canvas.getPanX(), targetPanY - canvas.getPanY());
+        selectedId = blockId;
+        setStatus("已定位到: " + getNodeLabelById(blockId));
+        clearAndInit();
+    }
+
+    private String getNodeLabelById(String blockId) {
+        EditorBlock block = state.getById(blockId);
+        if (block == null) {
+            return blockId;
+        }
+        if (block.customName() != null && !block.customName().isEmpty()) {
+            return block.customName();
+        }
+        BlockSchema schema = reg.get(block.schemaId());
+        return schema == null ? block.schemaId() : schema.label();
+    }
+
+    private void startRename(BlockTreeNode node) {
+        renamingTreeNode = node;
+        EditorBlock block = state.getById(node.id);
+        String initialName = block != null && block.customName() != null ? block.customName() : "";
+        int treeX = paletteVisible ? PALETTE_W : 0;
+        int rectX = treeX + 4;
+        int rectY = TOP_BAR_H + 16;
+        for (TreeNodeRect rect : treeNodeRects) {
+            if (rect.node != null && rect.node.id.equals(node.id)) {
+                rectX = rect.x + 12;
+                rectY = rect.y;
+                break;
+            }
+        }
+        renameTextField = new TextFieldWidget(this.textRenderer, rectX, rectY, BLOCK_TREE_W - 16, 14, Text.literal(""));
+        renameTextField.setMaxLength(64);
+        renameTextField.setText(initialName);
+        renameTextField.setFocused(true);
+        addDrawableChild(renameTextField);
+    }
+
+    private void finishRename(boolean save) {
+        if (renamingTreeNode != null && save && renameTextField != null) {
+            String newName = renameTextField.getText().trim();
+            state.setCustomName(renamingTreeNode.id, newName.isEmpty() ? null : newName);
+            setStatus("已重命名: " + (newName.isEmpty() ? "(清除)" : newName));
+        }
+        if (renameTextField != null) {
+            children().remove(renameTextField);
+            renameTextField = null;
+        }
+        renamingTreeNode = null;
     }
 
     private int totalPaletteHeight() {
@@ -1070,17 +2128,39 @@ public class EditorScreen extends Screen {
         int sx = toScreenX(block.x());
         int sy = toScreenY(block.y());
         int sw = Math.max(BLOCK_W, (int) (BLOCK_W * canvas.getZoom()));
-        int sh = (int) (blockHeight(schema) * canvas.getZoom());
+        boolean collapsed = block.collapsed();
+        int fullH = blockHeight(schema);
+        int sh = collapsed ? (int) (BLOCK_H_BASE * canvas.getZoom()) : (int) (fullH * canvas.getZoom());
         int fill = parseColor(schema == null ? "#888888" : schema.color(), 0xFF000000);
         context.fill(sx, sy, sx + sw, sy + sh, fill);
+        
+        // 选中边框：主选中白色，多选中蓝色
         if (block.id().equals(selectedId)) {
             context.drawBorder(sx - 1, sy - 1, sw + 2, sh + 2, 0xFFFFFFFF);
+        } else if (selectedIds.contains(block.id())) {
+            context.drawBorder(sx - 1, sy - 1, sw + 2, sh + 2, 0xFF00AAFF);
         } else {
             context.drawBorder(sx, sy, sw, sh, 0xFF000000);
         }
-        String label = schema == null ? block.schemaId() : schema.label();
-        drawScaledText(context, Text.literal(truncate(label, sw - 4)),
+        
+        String displayName = block.customName() != null && !block.customName().isBlank()
+                ? block.customName() : (schema == null ? block.schemaId() : schema.label());
+        
+        // 折叠按钮（头部右侧）
+        int collapseBtnX = sx + sw - 18;
+        int collapseBtnY = sy + 2;
+        context.fill(collapseBtnX, collapseBtnY, collapseBtnX + 14, collapseBtnY + 10, 0x60000000);
+        String collapseIcon = collapsed ? "[+]" : "[-]";
+        drawScaledText(context, Text.literal(collapseIcon), collapseBtnX + 1, collapseBtnY + 1, 0xFFFFFF, fontScale * 0.8f);
+        
+        drawScaledText(context, Text.literal(truncate(displayName, sw - 24)),
                 sx + 3, sy + 2, 0xFFFFFF, fontScale);
+        
+        // 如果折叠则只显示头部
+        if (collapsed) {
+            return;
+        }
+        
         if (schema != null) {
             int lineY = sy + 14;
             for (BlockField f : schema.fields()) {
@@ -1116,7 +2196,7 @@ public class EditorScreen extends Screen {
         context.getMatrices().pop();
     }
 
-    /** 积木悬停 tooltip：显示 schema label + 字段中文说明。 */
+    /** 积木悬停 tooltip：显示 schema label + 中文描述 + 字段说明。 */
     private void drawBlockTooltip(DrawContext context, int mouseX, int mouseY) {
         String hitId = hitBlock(mouseX, mouseY);
         if (hitId == null) {
@@ -1131,20 +2211,37 @@ public class EditorScreen extends Screen {
             return;
         }
         List<String> lines = new ArrayList<>();
-        lines.add(schema.label() + "  [" + schema.id() + "]");
+        
+        String chineseDesc = getBlockChineseDescription(schema.id());
+        if (chineseDesc != null) {
+            lines.add(schema.label());
+            lines.add(chineseDesc);
+        } else {
+            lines.add(schema.label() + "  [" + schema.id() + "]");
+        }
+        
         for (BlockField f : schema.fields()) {
             Object v = b.fieldValues().get(f.name());
             if (v == null) {
                 v = f.defaultValue();
             }
             String vs = v == null ? "" : v.toString();
-            lines.add("  " + f.name() + " = " + truncate(vs, 160));
-            lines.add("    类型: " + f.type().name().toLowerCase());
+            String fieldDesc = getFieldChineseDescription(f.name(), schema.id());
+            if (fieldDesc != null) {
+                lines.add("  " + f.name() + " = " + truncate(vs, 140));
+                lines.add("    " + fieldDesc);
+            } else {
+                lines.add("  " + f.name() + " = " + truncate(vs, 160));
+            }
         }
         if (!schema.acceptsChildrenCategories().isEmpty()) {
             lines.add("可接子块: " + String.join(", ", schema.acceptsChildrenCategories()));
         }
-        int w = 240;
+        
+        lines.add("---");
+        lines.add("右键切换 | Tab 循环 | 快捷键提示");
+        
+        int w = 260;
         int h = lines.size() * 11 + 8;
         int tx = mouseX + 12;
         int ty = mouseY + 12;
@@ -1158,8 +2255,14 @@ public class EditorScreen extends Screen {
         context.drawBorder(tx, ty, w, h, 0xFFCCCCCC);
         int ly = ty + 4;
         for (String line : lines) {
+            int color = 0xFFDDDDDD;
+            if (line.startsWith("---")) {
+                color = 0xFF666666;
+            } else if (line.startsWith("右键") || line.startsWith("Tab") || line.startsWith("快捷")) {
+                color = 0xFF888888;
+            }
             context.drawTextWithShadow(this.textRenderer,
-                    Text.literal(truncate(line, w - 8)), tx + 4, ly, 0xFFDDDDDD);
+                    Text.literal(truncate(line, w - 8)), tx + 4, ly, color);
             ly += 11;
         }
     }
@@ -1211,6 +2314,10 @@ public class EditorScreen extends Screen {
                     x, y, 0xFFAA00);
             context.drawTextWithShadow(this.textRenderer,
                     Text.literal("类型: " + schema.id()), x, y + 12, 0xAAAAFF);
+            if (block.customName() != null && !block.customName().isBlank()) {
+                context.drawTextWithShadow(this.textRenderer,
+                        Text.literal("函数名: " + block.customName()), x, y + 24, 0x55FF55);
+            }
         }
         if (linkMode) {
             context.drawTextWithShadow(this.textRenderer,
@@ -1261,6 +2368,35 @@ public class EditorScreen extends Screen {
                 x, winHContent() - 14, 0x55FF55);
     }
 
+    /** 绘制全屏模式提示（3秒后自动消失）。 */
+    private void drawFullscreenHint(DrawContext context) {
+        if (fullscreenHintTime == 0) {
+            return;
+        }
+        long age = System.currentTimeMillis() - fullscreenHintTime;
+        if (age > FULLSCREEN_HINT_DURATION) {
+            fullscreenHintTime = 0;
+            return;
+        }
+        int ww = winW();
+        String hint = "全屏模式 - 按ESC或F11退出";
+        int textWidth = this.textRenderer.getWidth(hint);
+        int padding = 6;
+        int boxW = textWidth + padding * 2;
+        int boxH = 20;
+        int bx = (ww - boxW) / 2;
+        int by = 30;
+        int alpha = 220;
+        if (age > FULLSCREEN_HINT_DURATION - 1000) {
+            alpha = (int) (alpha * (FULLSCREEN_HINT_DURATION - age) / 1000.0);
+        }
+        int bgColor = (alpha << 24) | 0x1A1A1A;
+        context.fill(bx, by, bx + boxW, by + boxH, bgColor);
+        context.drawBorder(bx, by, boxW, boxH, 0xFF555555);
+        context.drawTextWithShadow(this.textRenderer, Text.literal(hint),
+                bx + padding, by + 5, 0xFFAAAAAA);
+    }
+
     // ---------- 鼠标交互 ----------
 
     @Override
@@ -1298,6 +2434,59 @@ public class EditorScreen extends Screen {
         }
         if (super.mouseClicked(lmx, lmy, button)) {
             return true;
+        }
+        // 重命名输入框处理
+        if (renamingTreeNode != null && renameTextField != null) {
+            finishRename(true);
+            return true;
+        }
+        // 积木树搜索框点击
+        if (blockTreeVisible) {
+            int treeX = paletteVisible ? PALETTE_W : 0;
+            int treeY = TOP_BAR_H;
+            int treeH = winHContent() - BOTTOM_BAR_H - TOP_BAR_H;
+            if (lmx >= treeX && lmx < treeX + BLOCK_TREE_W && lmy >= treeY && lmy < treeY + treeH) {
+                int searchY = treeY + 2;
+                int searchBoxX = treeX + 4;
+                int searchBoxW = BLOCK_TREE_W - 8;
+                int searchBoxH = 14;
+                if (lmx >= searchBoxX && lmx < searchBoxX + searchBoxW && lmy >= searchY && lmy < searchY + searchBoxH) {
+                    if (treeSearchField != null) {
+                        treeSearchField.setFocused(true);
+                    }
+                } else {
+                    if (treeSearchField != null) {
+                        treeSearchField.setFocused(false);
+                    }
+                    int mouseYTree = (int) lmy;
+                    for (TreeNodeRect rect : treeNodeRects) {
+                        if (mouseYTree >= rect.y && mouseYTree < rect.y + rect.h && lmx >= rect.x && lmx < rect.x + rect.w) {
+                            if (button == 0) {
+                                int iconX = rect.x + 10;
+                                int iconW = 10;
+                                if (lmx >= iconX - iconW && lmx < iconX + iconW && rect.node != null && !rect.node.children.isEmpty()) {
+                                    rect.node.expanded = !rect.node.expanded;
+                                    return true;
+                                }
+                                if (rect.node != null) {
+                                    long now = System.currentTimeMillis();
+                                    if (lastTreeClickNodeId != null && lastTreeClickNodeId.equals(rect.node.id) && now - lastTreeClickTime < 300) {
+                                        startRename(rect.node);
+                                        lastTreeClickNodeId = null;
+                                    } else {
+                                        centerOnBlock(rect.node.id);
+                                        lastTreeClickNodeId = rect.node.id;
+                                        lastTreeClickTime = now;
+                                    }
+                                    return true;
+                                }
+                            }
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
         }
         // 调色板点击
         if (paletteVisible && lmx >= 0 && lmx < PALETTE_W
@@ -1390,6 +2579,11 @@ public class EditorScreen extends Screen {
         // 左键命中积木：重置穿透偏移并选中
         hitOffset = 0;
         String hit = hitBlock(lmx, lmy);
+        
+        // Shift多选功能：检测Shift键
+        boolean shiftHeld = GLFW.glfwGetKey(MinecraftClient.getInstance().getWindow().getHandle(), GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS ||
+                           GLFW.glfwGetKey(MinecraftClient.getInstance().getWindow().getHandle(), GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
+        
         if (linkMode && hit != null && selectedId != null && !hit.equals(selectedId)) {
             state.connect(selectedId, hit);
             linkMode = false;
@@ -1398,16 +2592,70 @@ public class EditorScreen extends Screen {
             return true;
         }
         if (hit != null) {
-            selectedId = hit;
+            // 检查是否点击了折叠按钮
+            EditorBlock hitBlock = state.getById(hit);
+            if (hitBlock != null) {
+                BlockSchema hitSchema = reg.get(hitBlock.schemaId());
+                int sx = toScreenX(hitBlock.x());
+                int sy = toScreenY(hitBlock.y());
+                int sw = Math.max(BLOCK_W, (int) (BLOCK_W * canvas.getZoom()));
+                int collapseBtnX = sx + sw - 18;
+                int collapseBtnY = sy + 2;
+                // 检查鼠标位置是否在折叠按钮区域内
+                if (lmx >= collapseBtnX && lmx < collapseBtnX + 14 && lmy >= collapseBtnY && lmy < collapseBtnY + 10) {
+                    // 切换折叠状态
+                    state.setCollapsed(hit, !hitBlock.collapsed());
+                    setStatus(hitBlock.collapsed() ? "已展开积木" : "已折叠积木");
+                    clearAndInit();
+                    return true;
+                }
+            }
+            
+            if (shiftHeld) {
+                // Shift多选：切换选中状态
+                if (selectedIds.contains(hit)) {
+                    selectedIds.remove(hit);
+                    setStatus("已取消选中: " + hit);
+                } else {
+                    selectedIds.add(hit);
+                    setStatus("已添加选中 (" + selectedIds.size() + "): " + hit);
+                }
+            } else {
+                // 单选：清空其他选中，只选当前
+                selectedIds.clear();
+                selectedIds.add(hit);
+                selectedId = hit;
+            }
             EditorBlock b = state.getById(hit);
             double wx2 = toWorldX(lmx);
             double wy2 = toWorldY(lmy);
             dragOffsetX = wx2 - (b == null ? 0 : b.x());
             dragOffsetY = wy2 - (b == null ? 0 : b.y());
             draggingId = hit;
+            if (b != null) {
+                moveStartPositions.put(hit, new double[]{b.x(), b.y()});
+            }
             linkMode = false;
             clearAndInit();
             return true;
+        }
+        // 双击画布空白处归位
+        if (hit == null) {
+            long now = System.currentTimeMillis();
+            if (now - lastCanvasClickTime < 300 &&
+                Math.abs(lmx - lastCanvasClickX) < 5 &&
+                Math.abs(lmy - lastCanvasClickY) < 5) {
+                fitAllBlocksInView();
+                lastCanvasClickTime = 0;
+                return true;
+            }
+            lastCanvasClickTime = now;
+            lastCanvasClickX = lmx;
+            lastCanvasClickY = lmy;
+        }
+        // 点击空白处
+        if (!shiftHeld) {
+            selectedIds.clear();
         }
         if (selectedId != null || linkMode) {
             selectedId = null;
@@ -1456,15 +2704,33 @@ public class EditorScreen extends Screen {
             return true;
         }
         if (draggingId != null) {
-            // 拖拽落点若与其它块相交，snap 到最近空闲网格位（Task 8）
             EditorBlock dragged = state.getById(draggingId);
-            if (dragged != null) {
-                BlockSchema ds = reg.get(dragged.schemaId());
-                int dh = blockHeight(ds);
-                if (intersectsExisting(dragged.x(), dragged.y(), BLOCK_W, dh, draggingId)) {
-                    double[] snapped = snapToFreeGrid(dragged);
-                    state.moveBlock(draggingId, snapped[0], snapped[1]);
+            double[] startPos = moveStartPositions.remove(draggingId);
+
+            if (dragged != null && startPos != null) {
+                double finalX = dragged.x();
+                double finalY = dragged.y();
+                boolean moved = Math.abs(startPos[0] - finalX) > 0.5 || Math.abs(startPos[1] - finalY) > 0.5;
+
+                if (moved) {
+                    BlockSchema ds = reg.get(dragged.schemaId());
+                    int dh = blockHeight(ds);
+                    if (intersectsExisting(finalX, finalY, BLOCK_W, dh, draggingId)) {
+                        double[] snapped = snapToFreeGrid(dragged);
+                        state.moveBlock(draggingId, snapped[0], snapped[1]);
+                        finalX = snapped[0];
+                        finalY = snapped[1];
+                    }
+
+                    EditorAction action = new EditorAction();
+                    action.type = EditorAction.ActionType.MOVE_BLOCK;
+                    action.blockId = draggingId;
+                    action.before = new double[]{startPos[0], startPos[1]};
+                    action.after = new double[]{finalX, finalY};
+                    recordAction(action);
                 }
+
+                ensureBlockInView(dragged);
             }
             draggingId = null;
             return true;
@@ -1477,6 +2743,30 @@ public class EditorScreen extends Screen {
         double lmx = mouseX - winX();
         double lmy = mouseY - winYContent();
         int wh = winHContent();
+        // 积木树滚动
+        if (blockTreeVisible) {
+            int treeX = paletteVisible ? PALETTE_W : 0;
+            int treeY = TOP_BAR_H;
+            int treeH = wh - BOTTOM_BAR_H - TOP_BAR_H;
+            if (lmx >= treeX && lmx < treeX + BLOCK_TREE_W && lmy >= treeY && lmy < treeY + treeH) {
+                treeScroll -= (int) (verticalAmount * 14 * 2);
+                int searchBoxH = 14;
+                rebuildBlockTree();
+                int totalNodes = 0;
+                for (BlockTreeNode root : blockTreeRoots) {
+                    totalNodes += countVisibleNodes(root, 0);
+                }
+                int totalTreeH = totalNodes * 14 + 4;
+                int maxScroll = Math.max(0, totalTreeH - (treeH - searchBoxH - 8));
+                if (treeScroll < 0) {
+                    treeScroll = 0;
+                }
+                if (treeScroll > maxScroll) {
+                    treeScroll = maxScroll;
+                }
+                return true;
+            }
+        }
         // 调色板滚动
         if (paletteVisible && lmx >= 0 && lmx < PALETTE_W
                 && lmy >= TOP_BAR_H && lmy < wh - BOTTOM_BAR_H) {
@@ -1502,8 +2792,22 @@ public class EditorScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        // ESC键退出全屏
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            if (window != null && window.fullscreen) {
+                toggleFullscreen();
+                setStatus("已退出全屏模式");
+                return true;
+            }
+        }
+        // F11键切换全屏
         if (keyCode == GLFW.GLFW_KEY_F11) {
             toggleFullscreen();
+            if (window != null && window.fullscreen) {
+                setStatus("已进入全屏模式 - 按ESC或F11退出");
+            } else {
+                setStatus("已退出全屏模式");
+            }
             return true;
         }
         UserConfig cfg = DatapackEditorClient.config();
@@ -1525,18 +2829,57 @@ public class EditorScreen extends Screen {
                 return true;
             }
         }
-        // NBT 复制快捷键（Task 9）：C 坐标 / I 物品 / T 准星目标；文本框聚焦时不拦截
+        // NBT 复制快捷键（Task 9）：Ctrl+Shift+C 坐标 / Ctrl+Shift+I 物品 / Ctrl+Shift+T 准星目标
         if (!anyFieldFocused() && selectedId != null) {
-            if (keyCode == GLFW.GLFW_KEY_C) {
+            boolean ctrlShift = (modifiers & GLFW.GLFW_MOD_CONTROL) != 0 && (modifiers & GLFW.GLFW_MOD_SHIFT) != 0;
+            if (ctrlShift && keyCode == GLFW.GLFW_KEY_C) {
                 copyCoordinatesAction();
                 return true;
             }
-            if (keyCode == GLFW.GLFW_KEY_I) {
+            if (ctrlShift && keyCode == GLFW.GLFW_KEY_I) {
                 copyHeldItemAction();
                 return true;
             }
-            if (keyCode == GLFW.GLFW_KEY_T) {
+            if (ctrlShift && keyCode == GLFW.GLFW_KEY_T) {
                 copyTargetNbtAction();
+                return true;
+            }
+        }
+        // 批量操作快捷键（文本框聚焦时不拦截）
+        if (!anyFieldFocused()) {
+            boolean ctrl = (modifiers & GLFW.GLFW_MOD_CONTROL) != 0;
+            // Ctrl+C：复制选中积木
+            if (ctrl && keyCode == GLFW.GLFW_KEY_C) {
+                copySelectedBlocks();
+                return true;
+            }
+            // Ctrl+V：粘贴积木
+            if (ctrl && keyCode == GLFW.GLFW_KEY_V) {
+                pasteBlocks();
+                return true;
+            }
+            // Ctrl+D 或 Delete：删除选中积木
+            if ((ctrl && keyCode == GLFW.GLFW_KEY_D) || keyCode == GLFW.GLFW_KEY_DELETE) {
+                deleteSelectedBlocks();
+                return true;
+            }
+            // Ctrl+A：全选
+            if (ctrl && keyCode == GLFW.GLFW_KEY_A) {
+                selectAllBlocks();
+                return true;
+            }
+            // Ctrl+Z：撤销
+            if (ctrl && keyCode == GLFW.GLFW_KEY_Z) {
+                undo();
+                return true;
+            }
+            // Ctrl+Y：重做
+            if (ctrl && keyCode == GLFW.GLFW_KEY_Y) {
+                redo();
+                return true;
+            }
+            if (keyCode == GLFW.GLFW_KEY_B) {
+                toggleBlockTree();
                 return true;
             }
         }
@@ -1549,6 +2892,12 @@ public class EditorScreen extends Screen {
             if (tf != null && tf.isFocused()) {
                 return true;
             }
+        }
+        if (treeSearchField != null && treeSearchField.isFocused()) {
+            return true;
+        }
+        if (renameTextField != null && renameTextField.isFocused()) {
+            return true;
         }
         return false;
     }

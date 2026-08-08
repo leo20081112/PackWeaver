@@ -8,17 +8,23 @@ import net.minecraft.text.Text;
 
 /**
  * 新手引导覆盖层（Task 6）：在 EditorScreen 上叠加分步提示。
- * 步骤：1.点调色板加积木；2.选中积木编辑字段；3.点编译预览；4.点重载。
+ * 步骤：1.积木树侧边栏；2.添加第一个积木；3.编辑积木字段；4.编译和重载。
  * 点击「下一步」推进，「跳过」关闭并持久化 showOnboarding=false。
  */
 public final class OnboardingOverlay {
 
-    /** 引导步骤文案。 */
     private static final String[] STEPS = {
-            "第 1 步：在左侧调色板点击一个积木类型（如「每刻触发」）添加到画布",
-            "第 2 步：点击画布上的积木选中它，在右侧字段面板填写参数",
-            "第 3 步：点击顶部「Compile」按钮查看编译预览与产物",
-            "第 4 步：点击顶部「重载」按钮将数据包写入并应用（快捷键 R）"
+            "第 1 步：按 B 键打开积木树侧边栏，可以快速浏览和管理所有积木",
+            "第 2 步：在左侧调色板点击一个积木类型（如「每刻触发」）添加到画布",
+            "第 3 步：点击画布上的积木选中它，在右侧字段面板填写参数（可点击「显示更多选项」展开高级字段）",
+            "第 4 步：点击顶部「编译」查看预览，确认无误后点击「保存应用」或按 R 重载"
+    };
+    
+    private static final String[] STEP_TIPS = {
+            "💡 提示：积木树可以搜索、定位和重命名积木",
+            "💡 提示：常用字段会自动显示，高级字段需要展开「显示更多选项」",
+            "💡 提示：悬停积木可查看详细说明和使用方法",
+            "💡 提示：按 M 可切换到 IDE 文本模式进行高级编辑"
     };
 
     private final Screen host;
@@ -62,7 +68,20 @@ public final class OnboardingOverlay {
                 try {
                     config.save(configPath);
                 } catch (Exception ignored) {
-                    // 持久化失败不影响本次会话
+                }
+            }
+        }
+    }
+    
+    /** 重播引导。 */
+    public void replay() {
+        step = 0;
+        if (config != null) {
+            config.showOnboarding = true;
+            if (configPath != null) {
+                try {
+                    config.save(configPath);
+                } catch (Exception ignored) {
                 }
             }
         }
@@ -74,33 +93,39 @@ public final class OnboardingOverlay {
             return false;
         }
         MinecraftClient mc = MinecraftClient.getInstance();
-        int boxW = Math.min(420, screenWidth - 20);
-        int boxH = 56;
+        int boxW = Math.min(480, screenWidth - 20);
+        int boxH = 76;
         int boxX = (screenWidth - boxW) / 2;
         int boxY = screenHeight - boxH - 8;
 
-        // 半透明背景
         context.fill(boxX, boxY, boxX + boxW, boxY + boxH, 0xE8000000);
         context.drawBorder(boxX, boxY, boxW, boxH, 0xFFFFAA00);
 
-        // 步骤指示
         String stepLabel = (step + 1) + " / " + STEPS.length + " · 新手引导";
         if (mc != null) {
             context.drawTextWithShadow(mc.textRenderer, Text.literal(stepLabel),
                     boxX + 6, boxY + 4, 0xFFFFAA00);
+            
             String text = STEPS[step];
-            // 文本过长则截断
             int maxW = boxW - 12;
             String display = truncate(mc, text, maxW);
             context.drawTextWithShadow(mc.textRenderer, Text.literal(display),
                     boxX + 6, boxY + 18, 0xFFFFFFEE);
-            // 按钮：下一步 / 跳过
+            
+            String tip = STEP_TIPS[step];
+            context.drawTextWithShadow(mc.textRenderer, Text.literal(tip),
+                    boxX + 6, boxY + 32, 0xFF88FF88);
+            
+            int btnY = boxY + 50;
             context.drawTextWithShadow(mc.textRenderer,
-                    Text.literal("[下一步 →] 点击此处").formatted(net.minecraft.util.Formatting.GREEN),
-                    boxX + 6, boxY + 38, 0xFF55FF55);
+                    Text.literal("[下一步 →]").formatted(net.minecraft.util.Formatting.GREEN),
+                    boxX + 6, btnY, 0xFF55FF55);
+            context.drawTextWithShadow(mc.textRenderer,
+                    Text.literal("[重播]").formatted(net.minecraft.util.Formatting.YELLOW),
+                    boxX + 90, btnY, 0xFFFFAA00);
             context.drawTextWithShadow(mc.textRenderer,
                     Text.literal("[跳过]").formatted(net.minecraft.util.Formatting.RED),
-                    boxX + boxW - 50, boxY + 38, 0xFFFF5555);
+                    boxX + boxW - 50, btnY, 0xFFFF5555);
         }
         return true;
     }
@@ -110,21 +135,28 @@ public final class OnboardingOverlay {
         if (!shouldShow()) {
             return false;
         }
-        int boxW = Math.min(420, screenWidth - 20);
-        int boxH = 56;
+        int boxW = Math.min(480, screenWidth - 20);
+        int boxH = 76;
         int boxX = (screenWidth - boxW) / 2;
         int boxY = screenHeight - boxH - 8;
-        // 点击范围在引导框内
+        
         if (mouseX < boxX || mouseX > boxX + boxW
                 || mouseY < boxY || mouseY > boxY + boxH) {
             return false;
         }
-        // 跳过按钮（右下角）
-        if (mouseX >= boxX + boxW - 50 && mouseY >= boxY + 38) {
+        
+        int btnY = boxY + 50;
+        
+        if (mouseX >= boxX + boxW - 50 && mouseY >= btnY && mouseY < btnY + 12) {
             dismiss();
             return true;
         }
-        // 其余区域视为「下一步」
+        
+        if (mouseX >= boxX + 90 && mouseX < boxX + 140 && mouseY >= btnY && mouseY < btnY + 12) {
+            replay();
+            return true;
+        }
+        
         next();
         return true;
     }

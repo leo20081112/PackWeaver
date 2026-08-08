@@ -198,7 +198,7 @@ public final class TextToBlocksParser {
                 }
                 if (sig.equals(signature(eb.schemaId(), eb.fieldValues()))) {
                     EditorBlock updated = new EditorBlock(eb.id(), eb.schemaId(),
-                            eb.x(), eb.y(), fieldValues, new ArrayList<>(eb.childIds()));
+                            eb.x(), eb.y(), fieldValues, new ArrayList<>(eb.childIds()), null, eb.collapsed());
                     ctx.state.addBlock(updated);
                     ctx.usedExistingIds.add(eb.id());
                     if (parent != null) {
@@ -211,7 +211,7 @@ public final class TextToBlocksParser {
         String id = nextId(ctx.counter);
         double[] pos = gridPos(ctx, depth);
         EditorBlock nb = new EditorBlock(id, schemaId, pos[0], pos[1],
-                new LinkedHashMap<>(fieldValues), new ArrayList<>());
+                new LinkedHashMap<>(fieldValues), new ArrayList<>(), null, false);
         ctx.state.addBlock(nb);
         if (parent != null) {
             ctx.state.connect(parent.id(), id);

@@ -19,7 +19,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    if: github.repository_owner == 'your-github-username' # TODO: 替换为你的GitHub用户名或组织名
+    if: github.repository_owner == 'leo20081112'
     steps:
       - name: Checkout
         uses: actions/checkout@v4

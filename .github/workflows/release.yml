@@ -48,12 +48,19 @@ jobs:
           for f in *.jar; do [ "$f" != "$JAR" ] && rm -f "$f"; done
           mv "$JAR" "packweaver-plugin-${TAG}.jar"
 
+      - name: Delete existing release if any
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete "${{ github.ref_name }}" --yes || true
+
       - name: Create GitHub Release and upload jars
         uses: softprops/action-gh-release@v2
         with:
           files: |
             mod/build/libs/packweaver-mod-*.jar
             plugin/build/libs/packweaver-plugin-*.jar
+          generate_release_notes: false
           body: |
             ## PackWeaver v0.3.0
 

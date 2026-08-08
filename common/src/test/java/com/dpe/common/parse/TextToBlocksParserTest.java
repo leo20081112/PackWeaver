@@ -255,7 +255,7 @@ class TextToBlocksParserTest {
         List<String> out = new ArrayList<>();
         for (String l : content.split("\n", -1)) {
             String t = l.trim();
-            if (t.isEmpty() || t.startsWith("# 由 dpe 编辑器生成")) {
+            if (t.isEmpty() || t.startsWith("# 由 PackWeaver 编辑器生成")) {
                 continue;
             }
             out.add(t);
@@ -269,7 +269,7 @@ class TextToBlocksParserTest {
     void dpeGeneratedCommentIsSkipped() {
         Map<String, String> files = new LinkedHashMap<>();
         files.put("dpe/internal/tick.mcfunction",
-                "# 由 dpe 编辑器生成 - 事件: event.tick\nsay Hello");
+                "# 由 PackWeaver 编辑器生成 - 事件: event.tick\nsay Hello");
 
         EditorState state = parser.parse("dpe", files);
         long raws = state.getBlocks().stream()

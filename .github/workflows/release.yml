@@ -28,13 +28,25 @@ jobs:
         run: ./gradlew build --no-daemon
 
       - name: Rename artifacts
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
+          # Mod: remove non-final jars, rename the remapped jar
           cd mod/build/libs
-          rm -f *-dev.jar *-sources.jar *-all.jar
-          for f in *.jar; do mv "$f" "packweaver-mod-${GITHUB_REF_NAME}.jar"; done
+          rm -f *-sources.jar *-all.jar *-dev.jar
+          JAR=$(ls *.jar 2>/dev/null | head -1)
+          if [ -z "$JAR" ]; then echo "No mod jar found!"; exit 1; fi
+          # Remove other jars, then rename the kept one
+          for f in *.jar; do [ "$f" != "$JAR" ] && rm -f "$f"; done
+          mv "$JAR" "packweaver-mod-${TAG}.jar"
+
+          # Plugin: remove non-final jars, rename the reobf'd jar
           cd ../../../plugin/build/libs
-          rm -f *-dev.jar *-sources.jar *-all.jar
-          for f in *.jar; do mv "$f" "packweaver-plugin-${GITHUB_REF_NAME}.jar"; done
+          rm -f *-sources.jar *-all.jar *-dev.jar
+          JAR=$(ls *.jar 2>/dev/null | head -1)
+          if [ -z "$JAR" ]; then echo "No plugin jar found!"; exit 1; fi
+          for f in *.jar; do [ "$f" != "$JAR" ] && rm -f "$f"; done
+          mv "$JAR" "packweaver-plugin-${TAG}.jar"
 
       - name: Create GitHub Release and upload jars
         uses: softprops/action-gh-release@v2

@@ -360,9 +360,9 @@ public final class DpeCommand implements CommandExecutor, TabCompleter {
 
     private void sendHelp(Player player) {
         player.sendMessage(Component.empty()
-                .append(Component.text("=== DPE 命令帮助 ===", NamedTextColor.GOLD))
+                .append(Component.text("=== PackWeaver 命令帮助 ===", NamedTextColor.GOLD))
                 .append(Component.newline())
-                .append(Component.text("/dpe - 打开编辑器（默认 dpe 命名空间）", NamedTextColor.AQUA))
+                .append(Component.text("/dpe - 打开编辑器（默认 packweaver 命名空间）", NamedTextColor.AQUA))
                 .append(Component.newline())
                 .append(Component.text("/dpe <namespace> - 打开指定命名空间编辑器", NamedTextColor.AQUA))
                 .append(Component.newline())

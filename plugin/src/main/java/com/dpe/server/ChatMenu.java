@@ -22,9 +22,9 @@ final class ChatMenu {
 
     /** 根菜单：列出主要操作。 */
     static Component buildRootMenu(EditorSession session) {
-        String ns = session == null ? "dpe" : session.namespace();
+        String ns = session == null ? "packweaver" : session.namespace();
         long rev = session == null ? 0L : session.revision();
-        Component header = Component.text("=== DPE 编辑器 [" + ns + "] (rev=" + rev + ") ===",
+        Component header = Component.text("=== PackWeaver 编辑器 [" + ns + "] (rev=" + rev + ") ===",
                 NamedTextColor.GOLD, TextDecoration.BOLD);
         return Component.empty()
                 .append(header).append(Component.newline())

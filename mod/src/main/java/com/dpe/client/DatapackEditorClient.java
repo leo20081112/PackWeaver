@@ -21,14 +21,14 @@ import java.nio.file.Path;
 
 /**
  * 客户端入口：注册按键绑定（默认 K）打开编辑器，注册网络通道接收服务端同步。
- * 配置文件位于 {@code config/dpe/config.json}（{@link UserConfig}）。
+ * 配置文件位于 {@code config/packweaver/config.json}（{@link UserConfig}）。
  */
 public final class DatapackEditorClient implements ClientModInitializer {
 
     /** 默认数据包命名空间（离线编辑时使用）。 */
     private static final String DEFAULT_NAMESPACE = "dpe";
     /** 配置文件路径（相对游戏运行目录）。 */
-    public static final String CONFIG_RELATIVE_PATH = "config/dpe/config.json";
+    public static final String CONFIG_RELATIVE_PATH = "config/packweaver/config.json";
 
     private static KeyBinding openEditorKey;
     private static volatile UserConfig config;
@@ -51,10 +51,10 @@ public final class DatapackEditorClient implements ClientModInitializer {
         // 按键绑定：从配置中读取 openEditor 键（默认 K = GLFW_KEY_K）
         int openKey = configKey(config, "openEditor", GLFW.GLFW_KEY_K);
         openEditorKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.dpe.open_editor",
+                "key.packweaver.open_editor",
                 InputUtil.Type.KEYSYM,
                 openKey,
-                "key.categories.dpe"
+                "key.categories.packweaver"
         ));
 
         // 每客户端 tick 检测按键
@@ -192,7 +192,7 @@ public final class DatapackEditorClient implements ClientModInitializer {
             if (!Files.exists(mcmeta)) {
                 Files.createDirectories(target);
                 String mcmetaJson = "{\"pack\":{\"pack_format\":" + DatapackExporter.PACK_FORMAT
-                        + ",\"description\":\"DPE skeleton (" + ns + ")\"}}";
+                        + ",\"description\":\"PackWeaver skeleton (" + ns + ")\"}}";
                 Files.writeString(mcmeta, mcmetaJson);
             }
             Path tick = target.resolve("data/" + ns + "/functions/internal/tick.mcfunction");

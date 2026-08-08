@@ -21,7 +21,7 @@ public final class TextToBlocksParser {
 
     private static final String RAW_TEXT_SCHEMA = "raw_text";
     /** dpe 编辑器生成的注释行前缀，解析时跳过以避免往返污染。 */
-    private static final String DPE_COMMENT_PREFIX = "# 由 dpe 编辑器生成";
+    private static final String DPE_COMMENT_PREFIX = "# 由 PackWeaver 编辑器生成";
 
     /**
      * 解析多个文件（新建状态）。

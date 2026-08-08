@@ -87,6 +87,6 @@ public final class DpePluginMessageListener implements PluginMessageListener {
         } catch (Exception ignored) {
             // 客户端未注册通道等情况忽略
         }
-        player.sendMessage(Component.text("[DPE 错误] " + code + ": " + message, NamedTextColor.RED));
+        player.sendMessage(Component.text("[PackWeaver 错误] " + code + ": " + message, NamedTextColor.RED));
     }
 }

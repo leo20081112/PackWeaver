@@ -57,7 +57,7 @@ public final class BlockCompiler {
         String path = eventFunctionPath(event.schemaId());
         ResourceLocation fnId = new ResourceLocation(ns, path);
         List<String> lines = new ArrayList<>();
-        lines.add("# 由 dpe 编辑器生成 - 事件: " + event.schemaId());
+        lines.add("# 由 PackWeaver 编辑器生成 - 事件: " + event.schemaId());
 
         // 递归编译子块
         for (String childId : event.childIds()) {

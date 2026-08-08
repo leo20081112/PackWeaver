@@ -32,7 +32,7 @@
 - 服务端 `/dpe reload` 同样走串行化队列
 
 ### 可配置按键绑定
-- 设置屏幕自定义所有快捷键，持久化到 `config/dpe/config.json`，可重置默认
+- 设置屏幕自定义所有快捷键，持久化到 `config/packweaver/config.json`，可重置默认
 
 ## 模块
 

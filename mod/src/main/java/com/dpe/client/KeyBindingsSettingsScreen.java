@@ -19,7 +19,7 @@ import java.util.Map;
  * 键位设置屏幕（Task 5）：列出 KeyBindings 各动作，
  * 点击进入「等待按键」状态，再次按键绑定；
  * 冲突时红色提示，可覆盖或取消。
- * 保存到 {@code config/dpe/config.json}，「重置默认」恢复 {@link KeyBindings#defaults()}。
+ * 保存到 {@code config/packweaver/config.json}，「重置默认」恢复 {@link KeyBindings#defaults()}。
  */
 public class KeyBindingsSettingsScreen extends Screen {
 

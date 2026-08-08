@@ -32,7 +32,7 @@ public final class DatapackEditorPlugin extends JavaPlugin {
             cmd.setTabCompleter(dpeCommand);
         }
 
-        getLogger().info("DatapackEditor 已启用 (通道 " + CHANNEL + ")。");
+        getLogger().info("PackWeaver 已启用 (通道 " + CHANNEL + ")。");
     }
 
     @Override
@@ -54,7 +54,7 @@ public final class DatapackEditorPlugin extends JavaPlugin {
         } catch (Exception ignored) {
             // 注销失败忽略
         }
-        getLogger().info("DatapackEditor 已禁用。");
+        getLogger().info("PackWeaver 已禁用。");
     }
 
     public EditorSessionManager sessionManager() {

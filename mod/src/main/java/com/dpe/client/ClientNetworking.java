@@ -17,7 +17,7 @@ import java.util.function.Consumer;
  */
 public final class ClientNetworking {
 
-    /** DPE 通道标识。 */
+    /** PackWeaver 通道标识。 */
     public static final String CHANNEL_NAMESPACE = "dpe";
     public static final String CHANNEL_PATH = "msg";
 

@@ -43,7 +43,7 @@ public final class WikiFetcher {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(url))
-                    .header("User-Agent", "InGameDatapackEditor/1.0 (Fabric mod)")
+                    .header("User-Agent", "PackWeaver/0.3.0 (Fabric mod)")
                     .timeout(TIMEOUT)
                     .GET()
                     .build();

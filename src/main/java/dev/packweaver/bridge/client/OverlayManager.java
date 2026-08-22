@@ -24,7 +24,8 @@ import java.util.Map;
 public final class OverlayManager {
     private static final OverlayManager INSTANCE = new OverlayManager();
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    private static final Path CONFIG = Util.getRunDirectory().resolve("config").resolve("packweaver-overlay.json");
+    private static final Path CONFIG = net.fabricmc.loader.api.FabricLoader.getInstance()
+            .getGameDir().resolve("config").resolve("packweaver-overlay.json");
 
     private final Map<String, OverlayWindow> windows = new LinkedHashMap<>();
     private boolean visible = true;

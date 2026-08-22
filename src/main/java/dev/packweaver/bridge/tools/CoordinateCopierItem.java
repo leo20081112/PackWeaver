@@ -1,5 +1,6 @@
 package dev.packweaver.bridge.tools;
 
+import net.minecraft.client.item.TooltipContext;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.ItemUsageContext;
@@ -35,10 +36,10 @@ public class CoordinateCopierItem extends Item {
         if (world.isClient) {
             String payload;
             if (context.getPlayer() != null && context.getPlayer().isSneaking()) {
-                payload = NbtHelper.toPrettyPrintedText(
-                        world.getBlockEntity(pos) != null
-                                ? world.getBlockEntity(pos).createNbtWithIdentifyingData(pos)
-                                : world.getBlockState(pos).createNbtWithIdentifyingData(pos)).getString();
+                var blockEntity = world.getBlockEntity(pos);
+                payload = blockEntity != null
+                        ? NbtHelper.toPrettyPrintedText(blockEntity.createNbtWithIdentifyingData()).getString()
+                        : world.getBlockState(pos).toString();
             } else {
                 payload = String.format("%d %d %d", pos.getX(), pos.getY(), pos.getZ());
             }

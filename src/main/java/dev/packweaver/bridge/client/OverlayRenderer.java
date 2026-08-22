@@ -1,8 +1,7 @@
 package dev.packweaver.bridge.client;
 
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawableHelper;
-import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.client.gui.DrawContext;
 
 /**
  * 叠加层 HUD 渲染器：半透明窗口 + 标题栏 + 内容行（规划书扩展 D）。
@@ -16,7 +15,7 @@ public final class OverlayRenderer {
     private OverlayRenderer() {
     }
 
-    public static void render(MatrixStack matrices, float tickDelta) {
+    public static void render(DrawContext context, float tickDelta) {
         OverlayManager manager = OverlayManager.getInstance();
         if (!manager.isVisible()) {
             return;
@@ -29,25 +28,21 @@ public final class OverlayRenderer {
             if (!window.enabled) {
                 continue;
             }
-            drawWindow(matrices, client, window);
+            drawWindow(context, client, window);
         }
     }
 
-    public static void drawWindow(MatrixStack matrices, MinecraftClient client, OverlayWindow window) {
-        DrawableHelper.fill(matrices, window.x, window.y,
-                window.x + window.width, window.y + window.height, BG_COLOR);
-        DrawableHelper.fill(matrices, window.x, window.y,
-                window.x + window.width, window.y + 12, TITLE_COLOR);
-        client.textRenderer.drawWithShadow(matrices, window.title,
-                window.x + 4, window.y + 2, 0xFFFFFFFF);
+    public static void drawWindow(DrawContext context, MinecraftClient client, OverlayWindow window) {
+        context.fill(window.x, window.y, window.x + window.width, window.y + window.height, BG_COLOR);
+        context.fill(window.x, window.y, window.x + window.width, window.y + 12, TITLE_COLOR);
+        context.drawText(client.textRenderer, window.title, window.x + 4, window.y + 2, 0xFFFFFFFF, true);
         int lineY = window.y + 18;
         for (String line : OverlayManager.contentOf(window)) {
             if (lineY > window.y + window.height - 6) {
                 break;
             }
             String clipped = client.textRenderer.trimToWidth(line, window.width - 8);
-            client.textRenderer.drawWithShadow(matrices, clipped,
-                    window.x + 4, lineY, TEXT_COLOR);
+            context.drawText(client.textRenderer, clipped, window.x + 4, lineY, TEXT_COLOR, true);
             lineY += 11;
         }
     }

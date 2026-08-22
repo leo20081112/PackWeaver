@@ -1,0 +1,10 @@
+{
+  "category.packweaver": "PackWeaver",
+  "key.packweaver.toggle_overlay": "显示/隐藏叠加层 (F12)",
+  "item.packweaver.coordinate_copier": "坐标复制器",
+  "item.packweaver.coordinate_copier.tooltip.1": "右键方块：复制坐标到剪贴板",
+  "item.packweaver.coordinate_copier.tooltip.2": "Shift+右键：复制方块 NBT 数据",
+  "screen.packweaver.overlay_editor": "PackWeaver 窗口布局编辑",
+  "screen.packweaver.overlay_hint": "拖拽窗口标题栏移动，右侧按钮切换显示/隐藏",
+  "screen.packweaver.done": "完成"
+}

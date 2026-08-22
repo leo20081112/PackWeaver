@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "packweaver",
+  "version": "${version}",
+  "name": "PackWeaver Bridge",
+  "description": "PackWeaver 游戏内配套 Mod：F12 多窗口叠加层、热重载桥接、实时性能分析、坐标复制器与 NBT 检查工具。Implements the in-game companion mod from the PackWeaver v1.0 specification.",
+  "authors": [
+    "leo20081112"
+  ],
+  "contact": {
+    "homepage": "https://github.com/leo20081112/-mod",
+    "sources": "https://github.com/leo20081112/-mod"
+  },
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "dev.packweaver.bridge.PackWeaverBridge"
+    ],
+    "client": [
+      "dev.packweaver.bridge.PackWeaverBridgeClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.14.21",
+    "fabric-api": "*",
+    "minecraft": "~1.20.1",
+    "java": ">=17"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "category.packweaver": "PackWeaver",
+  "key.packweaver.toggle_overlay": "Toggle overlay (F12)",
+  "item.packweaver.coordinate_copier": "Coordinate Copier",
+  "item.packweaver.coordinate_copier.tooltip.1": "Right-click block: copy position to clipboard",
+  "item.packweaver.coordinate_copier.tooltip.2": "Shift+right-click: copy block NBT data",
+  "screen.packweaver.overlay_editor": "PackWeaver Overlay Layout",
+  "screen.packweaver.overlay_hint": "Drag title bars to move; toggle windows on the right",
+  "screen.packweaver.done": "Done"
+}

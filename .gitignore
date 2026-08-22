@@ -1,36 +1,17 @@
-# Gradle
+# gradle
 .gradle/
 build/
-!gradle/wrapper/gradle-wrapper.jar
-
-# IntelliJ IDEA
-.idea/
-*.iml
-*.ipr
-*.iws
 out/
 
-# Eclipse / VS Code
-.settings/
-.project
-.classpath
-.factorypath
+# ide
+.idea/
+*.iml
 .vscode/
+.settings/
+.classpath
+.project
 bin/
 
-# NetBeans
-nbproject/private/
-nbactions.xml
-
-# OS files
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Logs / runtime
-*.log
+# fabric
 run/
-runs/
-
-# Paperweight dev bundle / local caches
-/.paperpatches/
+remappedSrc/

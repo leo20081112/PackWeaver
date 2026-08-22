@@ -6,5 +6,6 @@
   "item.packweaver.coordinate_copier.tooltip.2": "Shift+右键：复制方块 NBT 数据",
   "screen.packweaver.overlay_editor": "PackWeaver 窗口布局编辑",
   "screen.packweaver.overlay_hint": "拖拽窗口标题栏移动，右侧按钮切换显示/隐藏",
-  "screen.packweaver.done": "完成"
+  "screen.packweaver.done": "完成",
+  "screen.packweaver.projects": "PackWeaver 项目管理"
 }

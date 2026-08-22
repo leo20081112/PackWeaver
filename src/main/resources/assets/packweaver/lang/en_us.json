@@ -6,5 +6,6 @@
   "item.packweaver.coordinate_copier.tooltip.2": "Shift+right-click: copy block NBT data",
   "screen.packweaver.overlay_editor": "PackWeaver Overlay Layout",
   "screen.packweaver.overlay_hint": "Drag title bars to move; toggle windows on the right",
-  "screen.packweaver.done": "Done"
+  "screen.packweaver.done": "Done",
+  "screen.packweaver.projects": "PackWeaver Projects"
 }

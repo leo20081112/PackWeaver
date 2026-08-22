@@ -21,6 +21,7 @@ public class PackWeaverBridge implements ModInitializer {
     public static final String MOD_ID = "packweaver";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
     public static final int BRIDGE_DEFAULT_PORT = 32005;
+    public static final int HTTP_BRIDGE_PORT = 32006;
 
     public static final Item COORDINATE_COPIER =
             new CoordinateCopierItem(new Item.Settings().maxCount(1).rarity(Rarity.EPIC));
@@ -32,7 +33,8 @@ public class PackWeaverBridge implements ModInitializer {
         PerfTracker.init();
         PWCommands.register();
         BridgeServer.getInstance().start();
+        new dev.packweaver.bridge.bridge.HttpBridgeServer().start();
 
-        LOGGER.info("[PackWeaver] Bridge 已初始化，TCP 桥接端口 {}（仅本机回环）", BRIDGE_DEFAULT_PORT);
+        LOGGER.info("[PackWeaver] Bridge 已初始化：TCP {} / HTTP {}", BRIDGE_DEFAULT_PORT, HTTP_BRIDGE_PORT);
     }
 }

@@ -37,9 +37,10 @@ public class PackWeaverBridgeClient implements ClientModInitializer {
             }
         });
 
-        // 启动时加载窗口布局配置与自定义积木
+        // 启动时加载窗口布局配置与自定义积木；注册区域预览渲染器
         OverlayManager.getInstance();
         ClientCommands.register();
         ClientCommands.loadCustomBlocks();
+        dev.packweaver.bridge.client.AreaPreview.isEnabled(); // 触发静态注册
     }
 }

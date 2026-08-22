@@ -8,6 +8,8 @@ import dev.packweaver.bridge.pack.PackProject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * IDE 模式：mcfunction 代码编辑器（规划书第 4 章）。
@@ -16,7 +18,7 @@ import java.util.List;
  */
 public class CodeEditorScreen extends Screen {
     private final PackProject project;
-    private String fn;
+    private String fn; // 相对 data/ 的文件路径（函数或 JSON）
     private List<String> lines = new ArrayList<>();
     private int caretLine;
     private int caretCol;
@@ -26,16 +28,31 @@ public class CodeEditorScreen extends Screen {
     private static final int X0 = 40;
     private static final int Y0 = 30;
 
+    /** 代码片段（规划书第 8.1 章）。 */
+    private static final Map<String, String> SNIPPETS = Map.of(
+            "execute", "execute as @a at @s if entity @s[distance=..5] run say hi",
+            "score", "scoreboard objectives add kills dummy 击杀数\nscoreboard players set @s kills 0",
+            "tellraw", "tellraw @s {\"text\":\"你好\",\"color\":\"aqua\"}",
+            "tellraw点击", "tellraw @s [{\"text\":\"[点击开始]\",\"color\":\"aqua\",\"clickEvent\":{\"action\":\"run_command\",\"value\":\"/function ns:start\"}}]",
+            "粒子", "particle minecraft:portal ~ ~1 ~ 0.5 0.5 0.5 0.1 50",
+            "计分检测", "execute if score @s kills matches 10.. run tellraw @a {\"text\":\"有人到 10 分了\"}");
+
+    private static final Set<String> COMPLETIONS = Set.of(
+            "execute", "tellraw", "give", "tp", "effect", "give", "gamemode", "playsound",
+            "particle", "setblock", "fill", "scoreboard", "tag", "function", "summon",
+            "title", "data", "kill", "say", "time", "weather", "worldborder", "clear",
+            "advancement", "schedule", "trigger", "bossbar", "team", "spreadplayers");
+
     public CodeEditorScreen(PackProject project, String fn) {
         super(Text.literal("PackWeaver IDE - " + project.namespace));
         this.project = project;
-        this.fn = fn;
+        this.fn = project.namespace + "/functions/" + fn + ".mcfunction";
         loadFile();
     }
 
     private void loadFile() {
         try {
-            String content = project.readFunction(fn);
+            String content = project.readRaw(fn);
             lines.clear();
             for (String l : content.replace("\r", "").split("\n", -1)) {
                 lines.add(l);
@@ -65,45 +82,115 @@ public class CodeEditorScreen extends Screen {
                     this.client.setScreen(new BlockEditorScreen(project));
                 })
                 .dimensions(this.width - 60, 6, 55, 18).build());
-        // 文件切换标签
+        // 文件切换标签（函数 + JSON）
         int x = 8;
-        for (String name : functionNames()) {
-            final String f = name;
-            addDrawableChild(ButtonWidget.builder(Text.literal(f), b -> {
+        for (String path : project.allFiles()) {
+            final String f = path;
+            String label = shortName(f);
+            int w = Math.max(40, this.textRenderer.getWidth(label) + 8);
+            if (x + w > this.width - 260) {
+                break;
+            }
+            addDrawableChild(ButtonWidget.builder(Text.literal(label), b -> {
                         fn = f;
                         loadFile();
                     })
-                    .dimensions(x, 6, Math.max(40, this.textRenderer.getWidth(name) + 8), 16).build());
-            x += Math.max(40, this.textRenderer.getWidth(name) + 12);
-            if (x > this.width - 260) {
+                    .dimensions(x, 26, w, 14).build());
+            x += w + 3;
+        }
+        // 片段按钮（第 8.1 章）
+        int sx = 8;
+        for (String key : SNIPPETS.keySet()) {
+            addDrawableChild(ButtonWidget.builder(Text.literal("§+" + key), b -> insertSnippet(key))
+                    .dimensions(sx, this.height - 40, Math.max(30, this.textRenderer.getWidth(key) + 14), 14).build());
+            sx += Math.max(30, this.textRenderer.getWidth(key) + 18);
+            if (sx > this.width / 2) {
                 break;
             }
         }
     }
 
-    private List<String> functionNames() {
-        List<String> names = new ArrayList<>();
-        for (String path : project.files.keySet()) {
+    private String shortName(String path) {
+        String s = path.replace(project.namespace + "/functions/", "")
+                .replace(".mcfunction", "").replace(".json", "");
+        return path.endsWith(".json") ? "{" + s + "}" : s;
+    }
+
+    private void insertSnippet(String key) {
+        String text = SNIPPETS.get(key);
+        String cur = lines.get(caretLine);
+        lines.set(caretLine, cur.substring(0, caretCol) + text + cur.substring(caretCol));
+        int nl = 0;
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == '\n') {
+                nl++;
+            }
+        }
+        if (nl > 0) {
+            String[] parts = lines.get(caretLine).split("\n", -1);
+            lines.remove(caretLine);
+            for (int i = 0; i < parts.length; i++) {
+                lines.add(caretLine + i, parts[i]);
+            }
+            caretLine += nl;
+            caretCol = parts[parts.length - 1].length();
+        } else {
+            caretCol += text.length();
+        }
+        message = "§a已插入片段: " + key;
+    }
+
+    /** Tab 补全（规划书第 4.2 章）：补全命令名与项目函数名。 */
+    private void complete() {
+        String cur = lines.get(caretLine);
+        int start = caretCol;
+        while (start > 0 && cur.charAt(start - 1) != ' ') {
+            start--;
+        }
+        String prefix = cur.substring(start, caretCol);
+        if (prefix.isEmpty()) {
+            message = "§7先输入几个字母再按 Tab";
+            return;
+        }
+        List<String> candidates = new ArrayList<>(COMPLETIONS);
+        for (String path : project.allFiles()) {
             if (path.endsWith(".mcfunction")) {
-                names.add(path.substring((project.namespace + "/functions/").length())
+                candidates.add(project.namespace + ":" + path
+                        .substring((project.namespace + "/functions/").length())
                         .replace(".mcfunction", ""));
             }
         }
-        for (dev.packweaver.bridge.pack.BlockNode ev : project.events) {
-            String f = dev.packweaver.bridge.pack.CodeGen.eventFunction(ev.type);
-            if (f != null) {
-                names.add(f);
+        List<String> matches = new ArrayList<>();
+        for (String c : candidates) {
+            if (c.startsWith(prefix) && !c.equals(prefix)) {
+                matches.add(c);
             }
         }
-        names.add("tick");
-        names.add("load");
-        return names.stream().distinct().toList();
+        if (matches.isEmpty()) {
+            message = "§7无补全候选（" + prefix + "）";
+        } else {
+            String best = matches.get(0);
+            String insert = best.substring(prefix.length());
+            lines.set(caretLine, cur.substring(0, caretCol) + insert + cur.substring(caretCol));
+            caretCol += insert.length();
+            message = "§a补全: " + best + (matches.size() > 1 ? "（其余: " + String.join(", ", matches.subList(1, Math.min(matches.size(), 5))) + "）" : "");
+        }
     }
 
     private void save() {
+        String content = String.join("\n", lines);
+        if (fn.endsWith(".json")) {
+            String cleaned = content.replaceAll(",\\s*([}\\]])", "$1");
+            try {
+                new com.google.gson.JsonParser().parse(cleaned);
+            } catch (Exception ex) {
+                message = "§cJSON 无效，未保存: " + ex.getMessage();
+                return;
+            }
+        }
         try {
-            project.writeFunction(fn, String.join("\n", lines));
-            message = "§a已保存并重载（" + fn + "）";
+            project.writeRaw(fn, content);
+            message = "§a已保存并重载（" + shortName(fn) + "）";
         } catch (Exception e) {
             message = "§c保存失败: " + e.getMessage();
         }
@@ -209,6 +296,10 @@ public class CodeEditorScreen extends Screen {
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (hasControlDown() && keyCode == 83) { // Ctrl+S
             save();
+            return true;
+        }
+        if (keyCode == 258) { // Tab → 补全（第 4.2 章）
+            complete();
             return true;
         }
         switch (keyCode) {

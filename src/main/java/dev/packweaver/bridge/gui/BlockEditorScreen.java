@@ -106,8 +106,11 @@ public class BlockEditorScreen extends Screen {
         y += 12;
         for (String cat : BlockDefs.CATEGORIES) {
             boolean active = cat.equals(category);
+            boolean locked = (cat.equals("高级") || cat.equals("自定义"))
+                    && !dev.packweaver.bridge.client.PWLevel.canUseAdvanced();
             context.fill(6, y - 2, 96, y + 10, active ? 0x604FC3F7 : 0x30000000);
-            context.drawTextWithShadow(this.textRenderer, cat, 9, y, active ? 0xFFFFFFFF : 0xB0BEC5);
+            context.drawTextWithShadow(this.textRenderer, locked ? cat + "🔒" : cat, 9, y,
+                    active ? 0xFFFFFFFF : locked ? 0xFF78909C : 0xB0BEC5);
             y += 13;
         }
 
@@ -280,8 +283,15 @@ public class BlockEditorScreen extends Screen {
         // 分类切换
         int cy2 = 28 + 12;
         for (String cat : BlockDefs.CATEGORIES) {
+            boolean locked = (cat.equals("高级") || cat.equals("自定义"))
+                    && !dev.packweaver.bridge.client.PWLevel.canUseAdvanced();
             if (mx >= 6 && mx <= 96 && my >= cy2 - 2 && my <= cy2 + 10) {
-                category = cat;
+                if (locked) {
+                    message = "§7「" + cat + "」需要 Lv.2 学徒（创建 3 个项目），或 /pw level unlock 解锁";
+                } else {
+                    category = cat;
+                    message = "";
+                }
                 return true;
             }
             cy2 += 13;

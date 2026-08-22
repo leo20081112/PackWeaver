@@ -129,7 +129,8 @@ public final class CodeGen {
                 lines.add("execute as " + sel + " at @s run function " + ns + ":" + eachFn);
             }
             case "act_objective" -> {
-                lines.add("scoreboard objectives add " + n.p("obj") + " dummy " + jsonText(n.p("name", n.p("obj"))));
+                lines.add("scoreboard objectives add " + n.p("obj") + " dummy "
+                        + jsonText(n.p("name", n.p("obj")), "白色"));
                 String slot = n.p("slot");
                 if (!slot.equals("无")) {
                     lines.add("scoreboard objectives setdisplay " + slot + " " + n.p("obj"));
@@ -147,7 +148,7 @@ public final class CodeGen {
     public static String commandOf(BlockNode n) {
         return switch (n.type) {
             case "act_send" -> {
-                String text = jsonText(n.p("text"));
+                String text = jsonText(n.p("text"), n.p("color", "白色"));
                 yield switch (n.p("pos", "聊天栏")) {
                     case "标题" -> "title " + n.p("target") + " title " + text;
                     case "动作栏" -> "title " + n.p("target") + " actionbar " + text;
@@ -180,6 +181,7 @@ public final class CodeGen {
                 yield "tag " + n.p("target") + " " + op + " " + n.p("tag");
             }
             case "act_call" -> "function " + n.p("fn");
+            case "act_note" -> "# " + n.p("text");
             case "act_cmd", "custom" -> n.p("cmd");
             default -> "";
         };
@@ -230,8 +232,12 @@ public final class CodeGen {
         return raw.contains(":") ? raw : "minecraft:" + raw;
     }
 
-    public static String jsonText(String s) {
-        return "{\"text\":\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}";
+    private static final Map<String, String> COLORS = Map.of(
+            "白色", "white", "金色", "gold", "红色", "red", "绿色", "green", "水色", "aqua", "紫色", "light_purple");
+
+    public static String jsonText(String s, String colorZh) {
+        String color = COLORS.getOrDefault(colorZh, "white");
+        return "{\"text\":\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\",\"color\":\"" + color + "\"}";
     }
 
     private static String branchFn(String parent, int[] counter) {

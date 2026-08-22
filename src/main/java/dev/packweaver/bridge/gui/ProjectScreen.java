@@ -70,6 +70,27 @@ public class ProjectScreen extends Screen {
             addDrawableChild(ButtonWidget.builder(Text.literal("IDE 模式"), b ->
                             openProject(project, true))
                     .dimensions(this.width / 2 - 76, y, 60, 18).build());
+            addDrawableChild(ButtonWidget.builder(Text.literal("导出"), b -> {
+                        try {
+                            message = "已导出: " + PackProject.load(project).exportZip();
+                            messageColor = 0xFF66BB6A;
+                        } catch (Exception ex) {
+                            message = "导出失败: " + ex.getMessage();
+                            messageColor = 0xFFEF5350;
+                        }
+                    })
+                    .dimensions(this.width / 2 - 12, y, 44, 18).build());
+            addDrawableChild(ButtonWidget.builder(Text.literal("快照"), b -> {
+                        try {
+                            String id = dev.packweaver.bridge.pack.PackSnapshots.save(PackProject.load(project));
+                            message = "快照 " + id + " 已保存（/pw snapshot restore " + project + " " + id + "）";
+                            messageColor = 0xFF66BB6A;
+                        } catch (Exception ex) {
+                            message = "快照失败: " + ex.getMessage();
+                            messageColor = 0xFFEF5350;
+                        }
+                    })
+                    .dimensions(this.width / 2 + 36, y, 40, 18).build());
             addDrawableChild(ButtonWidget.builder(Text.literal("删除"), b -> {
                         try {
                             PackProject.load(project).delete();
@@ -81,7 +102,7 @@ public class ProjectScreen extends Screen {
                             messageColor = 0xFFEF5350;
                         }
                     })
-                    .dimensions(this.width / 2 + 90, y, 50, 18).build());
+                    .dimensions(this.width / 2 + 80, y, 46, 18).build());
             y += 22;
         }
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.packweaver.done"), b -> close())
@@ -106,6 +127,7 @@ public class ProjectScreen extends Screen {
             p.namespace = ns;
             Templates.apply(p, Templates.ALL.get(templateIndex).id());
             p.save();
+            dev.packweaver.bridge.client.PWLevel.projectCreated();
             message = "项目 " + ns + " 创建成功（模板: " + Templates.ALL.get(templateIndex).name() + "）";
             messageColor = 0xFF66BB6A;
             this.clearAndInit();
@@ -134,6 +156,8 @@ public class ProjectScreen extends Screen {
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         renderBackground(context);
         context.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, 15, 0xFFFFFF);
+        context.drawTextWithShadow(this.textRenderer, dev.packweaver.bridge.client.PWLevel.title(),
+                this.width / 2 + 160, 15, 0xFFCC80);
         context.drawTextWithShadow(this.textRenderer, "项目名", this.width / 2 - 130, 30, 0xA0A0A0);
         context.drawTextWithShadow(this.textRenderer, "命名空间", this.width / 2 + 10, 30, 0xA0A0A0);
         nameField.render(context, mouseX, mouseY, delta);

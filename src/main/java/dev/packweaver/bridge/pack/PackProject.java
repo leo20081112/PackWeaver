@@ -115,18 +115,35 @@ public class PackProject {
 
     /** 读取项目内某个函数的当前代码（用于 IDE 模式打开）。 */
     public String readFunction(String fn) throws IOException {
+        return readRaw(namespace + "/functions/" + fn + ".mcfunction");
+    }
+
+    /** 读取项目内任意数据文件（相对 data/ 的路径，如 ns/advancements/join.json）。 */
+    public String readRaw(String relPath) throws IOException {
         Path dir = projectDir(namespace);
-        Path f = dir.resolve("data").resolve(namespace).resolve("functions").resolve(fn + ".mcfunction");
+        Path f = dir.resolve("data").resolve(relPath);
         if (Files.exists(f)) {
             return Files.readString(f);
         }
-        return "";
+        return files.getOrDefault(relPath, "");
     }
 
     /** IDE 模式保存函数：写文件并把该函数标记为手写（技术模式会显示为代码已自定义）。 */
     public void writeFunction(String fn, String content) throws IOException {
-        files.put(namespace + "/functions/" + fn + ".mcfunction", content);
+        writeRaw(namespace + "/functions/" + fn + ".mcfunction", content);
+    }
+
+    /** 保存任意数据文件（函数/JSON 等）。 */
+    public void writeRaw(String relPath, String content) throws IOException {
+        files.put(relPath, content);
         save();
+    }
+
+    /** 项目内全部文件（生成 + 手写），相对 data/ 的路径。 */
+    public java.util.Set<String> allFiles() {
+        java.util.Set<String> out = new java.util.TreeSet<>(CodeGen.generate(namespace, events).keySet());
+        out.addAll(files.keySet());
+        return out;
     }
 
     /** 导出 zip（pack.mcmeta 在 zip 根，data/ 在下）。返回文件路径。 */

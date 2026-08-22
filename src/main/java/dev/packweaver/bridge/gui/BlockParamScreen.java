@@ -77,6 +77,35 @@ public class BlockParamScreen extends Screen {
         }
 
         int by = Math.max(y + 6, 120);
+        // 「从游戏获取」坐标（规划书第 10.1 章）：带 X 参数的积木显示
+        boolean hasX = false;
+        for (BlockDefs.Param p : def.params) {
+            if (p.name.equals("x")) {
+                hasX = true;
+                break;
+            }
+        }
+        if (hasX && node.params.containsKey("x")) {
+            addDrawableChild(ButtonWidget.builder(Text.literal("📍 取当前坐标（从游戏获取）"), b -> {
+                        var player = net.minecraft.client.MinecraftClient.getInstance().player;
+                        if (player != null) {
+                            node.params.put("x", String.valueOf((int) Math.floor(player.getX())));
+                            node.params.put("y", String.valueOf((int) Math.floor(player.getY())));
+                            node.params.put("z", String.valueOf((int) Math.floor(player.getZ())));
+                            notice = "已填入当前位置，完成后点「完成」";
+                            for (int fi = 0; fi < textParams.size(); fi++) {
+                                BlockDefs.Param tp = textParams.get(fi);
+                                if (tp.name.equals("x") || tp.name.equals("y") || tp.name.equals("z")) {
+                                    fields.get(fi).setText(node.params.get(tp.name));
+                                }
+                            }
+                        } else {
+                            notice = "未进入世界";
+                        }
+                    })
+                    .dimensions(this.width / 2 - 90, by, 180, 18).build());
+            by += 22;
+        }
         if (def.container) {
             addDrawableChild(ButtonWidget.builder(Text.literal("在此积木内继续添加（设为插入点）"), b -> {
                         parent.setInsertTarget(node);

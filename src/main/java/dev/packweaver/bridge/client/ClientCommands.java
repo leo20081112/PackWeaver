@@ -64,6 +64,60 @@ public final class ClientCommands {
                                                 StringArgumentType.getString(ctx, "ns")))))
                         .then(literal("wiki").executes(ctx -> open(ctx.getSource(), new WikiScreen())))
                         .then(literal("debug").executes(ctx -> open(ctx.getSource(), new DebugScreen())))
+                        .then(literal("export")
+                                .executes(ctx -> {
+                                    String ns = soleProject(ctx.getSource());
+                                    return ns == null ? 0 : export(ctx.getSource(), ns);
+                                })
+                                .then(argument("ns", StringArgumentType.word())
+                                        .executes(ctx -> export(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "ns")))))
+                        .then(literal("run")
+                                .then(argument("ns", StringArgumentType.word())
+                                        .executes(ctx -> run(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "ns"), null))
+                                        .then(argument("fn", StringArgumentType.word())
+                                                .executes(ctx -> run(ctx.getSource(),
+                                                        StringArgumentType.getString(ctx, "ns"),
+                                                        StringArgumentType.getString(ctx, "fn"))))))
+                        .then(literal("snapshot")
+                                .then(literal("save")
+                                        .executes(ctx -> {
+                                            String ns = soleProject(ctx.getSource());
+                                            return ns == null ? 0 : snapshotSave(ctx.getSource(), ns);
+                                        })
+                                        .then(argument("ns", StringArgumentType.word())
+                                                .executes(ctx -> snapshotSave(ctx.getSource(),
+                                                        StringArgumentType.getString(ctx, "ns")))))
+                                .then(literal("list")
+                                        .then(argument("ns", StringArgumentType.word())
+                                                .executes(ctx -> snapshotList(ctx.getSource(),
+                                                        StringArgumentType.getString(ctx, "ns")))))
+                                .then(literal("restore")
+                                        .then(argument("ns", StringArgumentType.word())
+                                                .then(argument("id", StringArgumentType.word())
+                                                        .executes(ctx -> snapshotRestore(ctx.getSource(),
+                                                                StringArgumentType.getString(ctx, "ns"),
+                                                                StringArgumentType.getString(ctx, "id")))))))
+                        .then(literal("preview").executes(ctx -> {
+                            dev.packweaver.bridge.client.AreaPreview.toggle();
+                            ctx.getSource().sendFeedback(Text.literal(
+                                    "区域预览: " + (AreaPreview.isEnabled() ? "§a开（橙色线框=积木检测区域）" : "§c关")));
+                            return 1;
+                        }))
+                        .then(literal("level")
+                                .executes(ctx -> {
+                                    ctx.getSource().sendFeedback(Text.literal(
+                                            PWLevel.title() + "（已创建 " + PWLevel.projectsCreated() + " 个项目）"
+                                                    + (PWLevel.unlocked() ? " §7[限制已关闭]" : "")));
+                                    return PWLevel.level();
+                                })
+                                .then(literal("unlock").executes(ctx -> {
+                                    PWLevel.toggleUnlock();
+                                    ctx.getSource().sendFeedback(Text.literal(
+                                            PWLevel.unlocked() ? "已关闭等级限制（全积木可用）" : "已恢复等级限制"));
+                                    return 1;
+                                })))
                         .then(literal("blocks")
                                 .then(literal("reload").executes(ctx -> {
                                     int n = loadCustomBlocks();
@@ -121,6 +175,79 @@ public final class ClientCommands {
             return open(source, new DiagScreen(p, null));
         } catch (Exception e) {
             source.sendError(Text.literal("打开失败: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    /** 加载 config/packweaver/blocks/*.json 自定义积木（规划书第 19 章）。 */
+    private static int export(FabricClientCommandSource source, String ns) {
+        try {
+            PackProject p = PackProject.load(ns);
+            java.nio.file.Path path = p.exportZip();
+            source.sendFeedback(Text.literal("§a已导出: §f" + path));
+            return 1;
+        } catch (Exception e) {
+            source.sendError(Text.literal("导出失败: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    /** 运行（规划书第 2.4 章 ▶ 运行）：执行项目函数并热重载。 */
+    private static int run(FabricClientCommandSource source, String ns, String fn) {
+        var server = source.getClient().getServer();
+        if (server == null) {
+            source.sendError(Text.literal("未进入世界"));
+            return 0;
+        }
+        String name = fn == null ? "load" : fn;
+        server.execute(() -> {
+            server.getCommandManager().executeWithPrefix(server.getCommandSource(), "reload");
+            server.getCommandManager().executeWithPrefix(server.getCommandSource(), "function " + ns + ":" + name);
+        });
+        source.sendFeedback(Text.literal("§a运行: §f" + ns + ":" + name));
+        return 1;
+    }
+
+    private static int snapshotSave(FabricClientCommandSource source, String ns) {
+        try {
+            PackProject p = PackProject.load(ns);
+            String id = dev.packweaver.bridge.pack.PackSnapshots.save(p);
+            source.sendFeedback(Text.literal("§a快照已保存: §f" + id + "§7（/pw snapshot restore " + ns + " " + id + " 可恢复）"));
+            return 1;
+        } catch (Exception e) {
+            source.sendError(Text.literal("快照失败: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int snapshotList(FabricClientCommandSource source, String ns) {
+        try {
+            var list = dev.packweaver.bridge.pack.PackSnapshots.list(ns);
+            if (list.isEmpty()) {
+                source.sendFeedback(Text.literal("（暂无快照，/pw snapshot save " + ns + " 创建）"));
+            }
+            for (var s : list) {
+                source.sendFeedback(Text.literal("● " + s.id() + "  " + s.time() + "  " + s.bytes() + " 字节"));
+            }
+            return list.size();
+        } catch (Exception e) {
+            source.sendError(Text.literal("读取快照失败: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int snapshotRestore(FabricClientCommandSource source, String ns, String id) {
+        try {
+            dev.packweaver.bridge.pack.PackSnapshots.restore(ns, id);
+            var server = source.getClient().getServer();
+            if (server != null) {
+                server.execute(() -> server.getCommandManager()
+                        .executeWithPrefix(server.getCommandSource(), "reload"));
+            }
+            source.sendFeedback(Text.literal("§a已恢复快照 " + id + " 并重载"));
+            return 1;
+        } catch (Exception e) {
+            source.sendError(Text.literal("恢复失败: " + e.getMessage()));
             return 0;
         }
     }

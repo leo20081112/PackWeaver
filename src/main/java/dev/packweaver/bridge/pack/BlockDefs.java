@@ -72,7 +72,8 @@ public final class BlockDefs {
         def("act_send", "玩家操作", "发送消息", false, false, false)
                 .param("target", "目标", new String[]{"@s", "@a", "@p", "@r"})
                 .param("text", "内容", "text", "你好！")
-                .param("pos", "位置", new String[]{"聊天栏", "标题", "动作栏"});
+                .param("pos", "位置", new String[]{"聊天栏", "标题", "动作栏"})
+                .param("color", "颜色", new String[]{"白色", "金色", "红色", "绿色", "水色", "紫色"});
         def("act_give", "玩家操作", "给予物品", false, false, false)
                 .param("target", "目标", new String[]{"@s", "@a", "@p", "@r"})
                 .param("item", "物品ID", "text", "minecraft:diamond")
@@ -146,6 +147,8 @@ public final class BlockDefs {
         // ---- 高级（规划书第 9.3 高级）----
         def("act_call", "高级", "调用函数", false, false, false)
                 .param("fn", "函数名", "text", "ns:main");
+        def("act_note", "高级", "注释（说明文字）", false, false, false)
+                .param("text", "注释", "text", "这一段做什么");
         def("act_cmd", "高级", "执行原始命令", false, false, false)
                 .param("cmd", "命令", "text", "say hello");
         def("custom", "自定义", "自定义代码块", false, false, false)

@@ -24,17 +24,38 @@ public class PackWeaverSyncPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        perf = new PerfTracker(this);
-        perf.init();
-        http = new HttpBridge(this);
-        http.start();
-        tcp = new TcpBridge(this);
-        tcp.start();
-        PwsCommand cmd = new PwsCommand(this);
-        getCommand("pws").setExecutor(cmd);
-        getCommand("pws").setTabCompleter(cmd);
-        getLogger().info("PackWeaver Sync 已启用：HTTP http://127.0.0.1:"
-                + httpPort() + "/pw/ ，TCP 127.0.0.1:" + tcpPort() + "（仅本机回环）");
+        try {
+            perf = new PerfTracker(this);
+            perf.init();
+        } catch (Throwable t) {
+            getLogger().severe("性能统计初始化失败（不影响桥接）: " + t);
+        }
+        try {
+            http = new HttpBridge(this);
+            http.start();
+        } catch (Throwable t) {
+            getLogger().severe("HTTP 桥接启动失败: " + t);
+        }
+        try {
+            tcp = new TcpBridge(this);
+            tcp.start();
+        } catch (Throwable t) {
+            getLogger().severe("TCP 桥接启动失败: " + t);
+        }
+        try {
+            PwsCommand cmd = new PwsCommand(this);
+            if (getCommand("pws") != null) {
+                getCommand("pws").setExecutor(cmd);
+                getCommand("pws").setTabCompleter(cmd);
+            } else {
+                getLogger().severe("plugin.yml 中缺少 pws 命令定义（jar 可能损坏或被重组）");
+            }
+        } catch (Throwable t) {
+            getLogger().severe("/pws 命令注册失败: " + t);
+        }
+        getLogger().info("PackWeaver Sync v" + getDescription().getVersion()
+                + " 启用完成：HTTP http://127.0.0.1:" + httpPort() + "/pw/ ，TCP 127.0.0.1:" + tcpPort()
+                + "（仅本机回环）。若上方有 severe 报错，请把该行发给开发者。");
     }
 
     @Override

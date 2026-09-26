@@ -77,9 +77,9 @@ public class CodeEditorScreen extends Screen {
                     this.client.setScreen(new DiagScreen(project, this));
                 })
                 .dimensions(this.width - 115, 6, 50, 18).build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("积木模式"), b -> {
+        addDrawableChild(ButtonWidget.builder(Text.literal("蓝图模式"), b -> {
                     assert this.client != null;
-                    this.client.setScreen(new BlockEditorScreen(project));
+                    this.client.setScreen(new dev.packweaver.bridge.gui.graph.BlockGraphScreen(project));
                 })
                 .dimensions(this.width - 60, 6, 55, 18).build());
         // 文件切换标签（函数 + JSON）

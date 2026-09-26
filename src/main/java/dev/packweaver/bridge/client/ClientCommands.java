@@ -160,7 +160,8 @@ public final class ClientCommands {
     private static int openEditor(FabricClientCommandSource source, String ns) {
         try {
             PackProject p = PackProject.load(ns);
-            return open(source, new BlockEditorScreen(p));
+            // /pw edit 默认打开蓝图画布（Blender 式节点交互）
+            return open(source, new dev.packweaver.bridge.gui.graph.BlockGraphScreen(p));
         } catch (Exception e) {
             source.sendError(Text.literal("打开失败: " + e.getMessage()));
             return 0;

@@ -144,7 +144,8 @@ public class ProjectScreen extends Screen {
             if (ideMode) {
                 this.client.setScreen(new CodeEditorScreen(p, "tick"));
             } else {
-                this.client.setScreen(new BlockEditorScreen(p));
+                // 积木模式默认进入蓝图画布（Blender 式节点交互）
+                this.client.setScreen(new dev.packweaver.bridge.gui.graph.BlockGraphScreen(p));
             }
         } catch (Exception ex) {
             message = "打开失败: " + ex.getMessage();

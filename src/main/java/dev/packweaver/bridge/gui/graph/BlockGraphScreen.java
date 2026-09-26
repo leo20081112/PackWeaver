@@ -72,9 +72,13 @@ public class BlockGraphScreen extends Screen {
     private int menuX, menuY;
     private final List<String> menuItems = new ArrayList<>();
 
-    private static final java.util.Map<String, Integer> CATEGORY_COLORS = java.util.Map.of(
-            "事件", 0xFFFF7043, "玩家操作", 0xFF26A69A, "世界操作", 0xFF8D6E63,
-            "逻辑控制", 0xFF5C6BC0, "数据", 0xFFFFA726, "高级", 0xFF78909C, "自定义", 0xFFAB47BC);
+    private static final java.util.Map<String, Integer> CATEGORY_COLORS = java.util.Map.ofEntries(
+            java.util.Map.entry("事件", 0xFFFF7043), java.util.Map.entry("玩家操作", 0xFF26A69A),
+            java.util.Map.entry("实体操作", 0xFF9CCC65), java.util.Map.entry("世界操作", 0xFF8D6E63),
+            java.util.Map.entry("消息界面", 0xFFFFD54F), java.util.Map.entry("物品经验", 0xFF4DB6AC),
+            java.util.Map.entry("数据", 0xFFFFA726), java.util.Map.entry("进度配方", 0xFFBA68C8),
+            java.util.Map.entry("逻辑控制", 0xFF5C6BC0), java.util.Map.entry("高级", 0xFF78909C),
+            java.util.Map.entry("自定义", 0xFFAB47BC));
 
     public BlockGraphScreen(PackProject project) {
         super(Text.literal("PackWeaver 蓝图 - " + project.namespace));
@@ -103,7 +107,7 @@ public class BlockGraphScreen extends Screen {
         }
         addDrawableChild(ButtonWidget.builder(Text.literal("保存运行"), b -> save(true))
                 .dimensions(this.width - 226, 4, 62, 16).build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("积木模式"), b -> {
+        addDrawableChild(ButtonWidget.builder(Text.literal("列表模式"), b -> {
                     assert this.client != null;
                     this.client.setScreen(new dev.packweaver.bridge.gui.BlockEditorScreen(project));
                 })
@@ -174,7 +178,7 @@ public class BlockGraphScreen extends Screen {
             }
             if (n.type.equals("ctrl_if")) {
                 layoutIf(v, depth, cursor);
-            } else if (n.type.equals("ctrl_foreach")) {
+            } else if (n.type.equals("ctrl_foreach") || n.type.equals("ctrl_wait")) {
                 layoutList(n.children, depth + 1, v, "out", cursor);
             }
             prevExec = v;
@@ -664,11 +668,25 @@ public class BlockGraphScreen extends Screen {
             message = "§a已连到「" + (dragSocket.equals("true") ? "是" : "否") + "」分支";
             return;
         }
-        // 源 = 执行输出 → 目标输入：目标接到源之后
+        // 源 = 执行输出 → 目标输入
         if ("out".equals(dragSocket)) {
-            GraphOps.detach(roots, dragNode);
-            GraphOps.insertAfter(roots, target, dragNode);
-            message = "§a执行流已连接";
+            boolean container = dragNode.type.equals("ctrl_foreach") || dragNode.type.equals("ctrl_wait");
+            if (container) {
+                // 容器语义：目标成为循环体/延迟体的第一块（与代码生成一致）
+                List<BlockNode> oldList = GraphOps.findList(roots, dragNode);
+                int oldIdx = oldList != null ? oldList.indexOf(dragNode) : -1;
+                GraphOps.detach(roots, dragNode);
+                GraphOps.detach(roots, target);
+                dragNode.children.add(0, target);
+                if (oldList != null) {
+                    oldList.add(Math.min(oldIdx < 0 ? 0 : oldIdx, oldList.size()), dragNode);
+                }
+                message = "§a已接入容器体";
+            } else {
+                GraphOps.detach(roots, dragNode);
+                GraphOps.insertAfter(roots, target, dragNode);
+                message = "§a执行流已连接";
+            }
             return;
         }
         message = "§7该锚点组合无效（输出→输入 / 条件→如果）";

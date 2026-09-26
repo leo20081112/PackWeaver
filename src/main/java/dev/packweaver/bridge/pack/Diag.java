@@ -41,7 +41,7 @@ public final class Diag {
             "advancement", "recipe", "schedule", "loot", "item", "replaceitem", "bossbar", "clear",
             "difficulty", "enchant", "experience", "xp", "fillbiome", "gamemode", "help", "locate",
             "me", "msg", "particle", "perf", "place", "random", "rotate", "ride", "spawnpoint",
-            "stopsound", "spectate", "team", "tell", "trigger", "waypoint", "whitelist");
+            "stopsound", "spectate", "team", "tell", "trigger", "waypoint", "whitelist", "gamerule");
 
     private static final Set<String> SELECTOR_ARGS = Set.of(
             "x", "y", "z", "dx", "dy", "dz", "distance", "sort", "limit", "type", "tag", "team",

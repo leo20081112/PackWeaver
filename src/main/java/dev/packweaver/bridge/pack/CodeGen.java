@@ -128,9 +128,19 @@ public final class CodeGen {
                 out.put(ns + "/functions/" + eachFn + ".mcfunction", join(eachLines));
                 lines.add("execute as " + sel + " at @s run function " + ns + ":" + eachFn);
             }
+            case "ctrl_wait" -> {
+                String waitFn = branchFn(fn, counter);
+                List<String> waitLines = new ArrayList<>();
+                emitBody(ns, waitFn, n.children, waitLines, out, counter);
+                out.put(ns + "/functions/" + waitFn + ".mcfunction", join(waitLines));
+                lines.add("schedule function " + ns + ":" + waitFn + " " + n.p("ticks", "20") + "t");
+            }
             case "act_objective" -> {
-                lines.add("scoreboard objectives add " + n.p("obj") + " dummy "
+                lines.add("scoreboard objectives add " + n.p("obj") + " " + n.p("criterion", "dummy") + " "
                         + jsonText(n.p("name", n.p("obj")), "白色"));
+                if (n.p("criterion", "dummy").equals("trigger")) {
+                    lines.add("scoreboard players enable @a " + n.p("obj"));
+                }
                 String slot = n.p("slot");
                 if (!slot.equals("无")) {
                     lines.add("scoreboard objectives setdisplay " + slot + " " + n.p("obj"));
@@ -161,13 +171,59 @@ public final class CodeGen {
                     + n.p("seconds", "10") + " " + n.p("amp", "0");
             case "act_clear_effect" -> "effect clear " + n.p("target");
             case "act_gamemode" -> "gamemode " + n.p("mode") + " " + n.p("target");
+            case "act_heal" -> "effect give " + n.p("target") + " minecraft:instant_health 1 "
+                    + n.p("amount", "3") + " true";
+            case "act_feed" -> "effect give " + n.p("target") + " minecraft:saturation 1 "
+                    + n.p("amount", "3") + " true";
+            case "act_xp" -> "experience add " + n.p("target") + " " + n.p("amount", "10") + " " + n.p("mode", "points");
+            case "act_enchant" -> "enchant @s " + id(n.p("id")) + " " + n.p("lvl", "3");
+            case "act_clear" -> n.p("item").isBlank()
+                    ? "clear " + n.p("target")
+                    : "clear " + n.p("target") + " " + id(n.p("item"));
             case "act_playsound" -> "playsound " + n.p("sound") + " master " + n.p("target") + " ~ ~ ~ "
                     + n.p("volume", "1.0") + " " + n.p("pitch", "1.0");
             case "act_particle" -> "particle " + n.p("particle") + " " + n.p("x", "~") + " " + n.p("y", "~") + " "
                     + n.p("z", "~") + " 0.5 0.5 0.5 0.05 " + n.p("count", "20");
             case "act_setblock" -> "setblock " + n.p("x", "~") + " " + n.p("y", "~") + " " + n.p("z", "~") + " " + n.p("block");
+            case "act_fill" -> "fill " + n.p("x1", "~") + " " + n.p("y1", "~") + " " + n.p("z1", "~")
+                    + " " + n.p("x2", "~3") + " " + n.p("y2", "~3") + " " + n.p("z2", "~3") + " " + n.p("block");
             case "act_time" -> "time set " + n.p("value");
             case "act_weather" -> "weather " + n.p("weather");
+            case "act_gamerule" -> "gamerule " + n.p("rule") + " " + n.p("value", "true");
+            case "act_summon" -> {
+                String name = n.p("name");
+                if (name.isBlank()) {
+                    yield "summon " + id(n.p("entity")) + " " + n.p("x", "~") + " " + n.p("y", "~") + " " + n.p("z", "~");
+                }
+                yield "summon " + id(n.p("entity")) + " " + n.p("x", "~") + " " + n.p("y", "~") + " " + n.p("z", "~")
+                        + " {CustomName:'" + jsonText(name, "白色") + "',CustomNameVisible:1b}";
+            }
+            case "act_kill" -> "kill " + n.p("sel");
+            case "act_tp_here" -> "tp " + n.p("sel") + " @s";
+            case "act_ent_effect" -> "effect give " + n.p("sel") + " " + n.p("effect") + " "
+                    + n.p("seconds", "10") + " " + n.p("amp", "0");
+            case "bb_create" -> {
+                String bar = "pw:" + n.p("id");
+                yield "bossbar add " + bar + " " + jsonText(n.p("name", "Boss"), "白色") + "\n"
+                        + "bossbar set color " + bar + " " + n.p("color", "red") + "\n"
+                        + "bossbar set max " + bar + " 100";
+            }
+            case "bb_update" -> {
+                String bar = "pw:" + n.p("id");
+                yield "bossbar set players " + bar + " @a\n"
+                        + "bossbar set value " + bar + " " + n.p("value", "50");
+            }
+            case "bb_remove" -> "bossbar remove pw:" + n.p("id");
+            case "act_adv_grant" -> "advancement grant " + n.p("target") + " only " + n.p("id");
+            case "act_adv_revoke" -> "advancement revoke " + n.p("target") + " only " + n.p("id");
+            case "act_recipe_give" -> "recipe give " + n.p("target") + " " + n.p("id");
+            case "act_recipe_take" -> "recipe take " + n.p("target") + " " + n.p("id");
+            case "act_score_op" -> "scoreboard players operation " + n.p("a", "@s") + " " + n.p("objA")
+                    + " " + n.p("op", "=") + " " + n.p("b", "@s") + " " + n.p("objB");
+            case "act_data_set" -> "data modify storage " + n.p("key", "mydata") + " " + n.p("path")
+                    + " set value " + n.p("value", "1");
+            case "act_data_show" -> "tellraw " + n.p("target", "@s") + " {\"nbt\":\"" + n.p("path")
+                    + "\",\"storage\":\"" + n.p("key", "mydata") + "\"}";
             case "act_score_set" -> {
                 String op = switch (n.p("op", "设置")) {
                     case "增加" -> "add";
@@ -211,9 +267,12 @@ public final class CodeGen {
             case "cond_area" -> "entity @s[x=" + c.p("x") + ",y=" + c.p("y") + ",z=" + c.p("z")
                     + ",dx=" + c.p("dx", "2") + ",dy=" + c.p("dy", "2") + ",dz=" + c.p("dz", "2") + "]";
             case "cond_item" -> "entity @s[nbt={SelectedItem:{id:\"" + id(c.p("item")) + "\"}}]";
+            case "cond_has_item" -> "entity @s[nbt={Inventory:[{id:\"" + id(c.p("item")) + "\"}]}]";
             case "cond_tag" -> "entity @s[tag=" + c.p("tag") + "]";
             case "cond_score" -> "score @s " + c.p("obj") + " matches " + scoreRange(c.p("op", "≥"), c.p("value", "10"));
             case "cond_block" -> "block " + c.p("x", "~") + " " + c.p("y", "~-1") + " " + c.p("z", "~") + " " + id(c.p("block"));
+            case "cond_gamemode" -> "entity @s[gamemode=" + c.p("mode", "survival") + "]";
+            case "cond_ent" -> "entity @e[type=" + id(c.p("type")) + "]";
             default -> "entity @s";
         };
     }

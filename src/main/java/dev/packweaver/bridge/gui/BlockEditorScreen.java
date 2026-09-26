@@ -31,9 +31,13 @@ public class BlockEditorScreen extends Screen {
     private List<BlockNode> insertTarget;
     private String insertLabel = "事件根";
 
-    private static final java.util.Map<String, Integer> CATEGORY_COLORS = java.util.Map.of(
-            "事件", 0xFFFF7043, "玩家操作", 0xFF26A69A, "世界操作", 0xFF8D6E63,
-            "逻辑控制", 0xFF5C6BC0, "数据", 0xFFFFA726, "高级", 0xFF78909C, "自定义", 0xFFAB47BC);
+    private static final java.util.Map<String, Integer> CATEGORY_COLORS = java.util.Map.ofEntries(
+            java.util.Map.entry("事件", 0xFFFF7043), java.util.Map.entry("玩家操作", 0xFF26A69A),
+            java.util.Map.entry("实体操作", 0xFF9CCC65), java.util.Map.entry("世界操作", 0xFF8D6E63),
+            java.util.Map.entry("消息界面", 0xFFFFD54F), java.util.Map.entry("物品经验", 0xFF4DB6AC),
+            java.util.Map.entry("数据", 0xFFFFA726), java.util.Map.entry("进度配方", 0xFFBA68C8),
+            java.util.Map.entry("逻辑控制", 0xFF5C6BC0), java.util.Map.entry("高级", 0xFF78909C),
+            java.util.Map.entry("自定义", 0xFFAB47BC));
 
     public BlockEditorScreen(PackProject project) {
         super(Text.literal("PackWeaver 技术模式 - " + project.namespace));

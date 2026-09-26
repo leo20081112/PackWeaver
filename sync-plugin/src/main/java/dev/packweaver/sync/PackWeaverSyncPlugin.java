@@ -76,6 +76,10 @@ public class PackWeaverSyncPlugin extends JavaPlugin {
         return getConfig().getInt("tcp-port", 32005);
     }
 
+    public long getMaxDeployMb() {
+        return getConfig().getLong("max-deploy-mb", 64L);
+    }
+
     public PerfTracker perf() {
         return perf;
     }

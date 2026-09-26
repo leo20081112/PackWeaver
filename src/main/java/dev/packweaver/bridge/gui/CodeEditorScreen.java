@@ -187,6 +187,7 @@ public class CodeEditorScreen extends Screen {
                 message = "§cJSON 无效，未保存: " + ex.getMessage();
                 return;
             }
+            content = cleaned; // 保存规范化后的 JSON（去尾随逗号）
         }
         try {
             project.writeRaw(fn, content);

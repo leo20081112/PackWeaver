@@ -114,6 +114,13 @@ public final class HttpBridgeServer {
             return;
         }
         String ns = sanitize(exchange.getRequestURI().getQuery());
+        // 体积上限 64MB，避免异常请求占满内存
+        long declared = exchange.getRequestHeaders().getFirst("Content-Length") == null
+                ? 0 : Long.parseLong(exchange.getRequestHeaders().getFirst("Content-Length"));
+        if (declared > 64L * 1024 * 1024) {
+            err(exchange, 413, "数据包超过 64MB 上限");
+            return;
+        }
         byte[] zip = exchange.getRequestBody().readAllBytes();
         if (zip.length == 0) {
             err(exchange, 400, "请求体为空");
@@ -122,7 +129,15 @@ public final class HttpBridgeServer {
         Path datapacks = server.getSavePath(WorldSavePath.DATAPACKS);
         Path target = datapacks.resolve("packweaver-" + ns + ".zip");
         Files.createDirectories(datapacks);
-        Files.write(target, zip);
+        // 先写临时文件再原子替换，避免 MC 重载时读到半截 zip
+        Path tmp = datapacks.resolve("packweaver-" + ns + ".zip.tmp");
+        Files.write(tmp, zip);
+        try {
+            Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
         server.execute(() -> server.getCommandManager()
                 .executeWithPrefix(server.getCommandSource(), "reload"));
         JsonObject o = ok();
@@ -143,7 +158,8 @@ public final class HttpBridgeServer {
                 }
             }
         }
-        return ns.replaceAll("[^a-z0-9_]", "").substring(0, Math.min(ns.length(), 32));
+        String cleaned = ns.replaceAll("[^a-z0-9_]", "");
+        return cleaned.isEmpty() ? "project" : cleaned.substring(0, Math.min(cleaned.length(), 32));
     }
 
     private static JsonObject readJson(HttpExchange exchange) throws IOException {

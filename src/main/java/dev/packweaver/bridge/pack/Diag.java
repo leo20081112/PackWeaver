@@ -237,7 +237,8 @@ public final class Diag {
         }
         for (String next : graph.getOrDefault(from, Set.of())) {
             if (next.equals(target)) {
-                return depth >= 0 && !from.equals(target) || depth > 0;
+                // 从 start 出发又回到 start —— 存在循环（含直接自我调用）
+                return true;
             }
             if (seen.add(next) && reaches(graph, next, target, seen, depth + 1)) {
                 return true;
@@ -305,7 +306,7 @@ public final class Diag {
                 String path = parts[1];
                 String content = p.files.get(path);
                 if (content != null) {
-                    p.files.put(path, content.replaceAll(",\\s*([}\\]]", "$1"));
+                    p.files.put(path, content.replaceAll(",\\s*([}\\]])", "$1"));
                     return true;
                 }
             }

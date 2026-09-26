@@ -112,15 +112,20 @@ public final class HttpBridge {
         Path dir = datapacksDir();
         if (dir != null && Files.isDirectory(dir)) {
             try (Stream<Path> s = Files.list(dir)) {
-                s.filter(Files::isRegularFile).forEach(p -> {
-                    JsonObject f = new JsonObject();
-                    f.addProperty("name", p.getFileName().toString());
-                    try {
-                        f.addProperty("bytes", Files.size(p));
-                    } catch (IOException ignored) {
-                    }
-                    arr.add(f);
-                });
+                // 列出 zip 包与文件夹型数据包
+                s.filter(p -> Files.isDirectory(p) || p.getFileName().toString().endsWith(".zip"))
+                        .forEach(p -> {
+                            JsonObject f = new JsonObject();
+                            f.addProperty("name", p.getFileName().toString());
+                            f.addProperty("type", Files.isDirectory(p) ? "dir" : "zip");
+                            if (Files.isRegularFile(p)) {
+                                try {
+                                    f.addProperty("bytes", Files.size(p));
+                                } catch (IOException ignored) {
+                                }
+                            }
+                            arr.add(f);
+                        });
             }
         }
         o.add("packs", arr);
@@ -174,7 +179,22 @@ public final class HttpBridge {
 
     private void deploy(HttpExchange ex) throws IOException {
         String ns = sanitize(queryParam(ex, "ns"));
+        // 体积上限（config max-deploy-mb，默认 64MB），防止异常请求占满内存
+        long maxBytes = plugin.getMaxDeployMb() * 1024L * 1024L;
+        String declared = ex.getRequestHeaders().getFirst("Content-Length");
+        if (declared != null && Long.parseLong(declared) > maxBytes) {
+            err(ex, 413, "数据包超过 " + plugin.getMaxDeployMb() + "MB 上限");
+            return;
+        }
         byte[] zip = ex.getRequestBody().readAllBytes();
+        if (zip.length == 0) {
+            err(ex, 400, "请求体为空");
+            return;
+        }
+        if (zip.length > maxBytes) {
+            err(ex, 413, "数据包超过 " + plugin.getMaxDeployMb() + "MB 上限");
+            return;
+        }
         Path dir = datapacksDir();
         if (dir == null) {
             err(ex, 503, "世界尚未加载");
@@ -182,7 +202,15 @@ public final class HttpBridge {
         }
         Files.createDirectories(dir);
         Path target = dir.resolve("packweaver-" + ns + ".zip");
-        Files.write(target, zip);
+        // 先写临时文件再原子替换，避免重载时读到半截 zip
+        Path tmp = dir.resolve("packweaver-" + ns + ".zip.tmp");
+        Files.write(tmp, zip);
+        try {
+            Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
         Boolean done = plugin.onMainThread(
                 () -> Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "minecraft:reload"), 10000);
         JsonObject o = ok();
@@ -209,7 +237,8 @@ public final class HttpBridge {
     /** 命名空间/文件名白名单清洗，防路径穿越。 */
     private static String sanitize(String raw) {
         String s = (raw == null || raw.isBlank()) ? "project" : raw;
-        return s.replaceAll("[^a-zA-Z0-9_-]", "").substring(0, Math.min(s.length(), 32));
+        String cleaned = s.replaceAll("[^a-zA-Z0-9_-]", "");
+        return cleaned.isEmpty() ? "project" : cleaned.substring(0, Math.min(cleaned.length(), 32));
     }
 
     private static JsonObject readJson(HttpExchange ex) throws IOException {

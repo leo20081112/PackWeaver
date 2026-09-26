@@ -92,6 +92,14 @@ src/main/java/dev/packweaver/bridge/
 ├── command/ perf/ tools/            # /pw 服务端命令 / 性能 / 坐标复制器
 ```
 
+## 服务端同步插件（第 19/20 章）
+
+仓库 `sync-plugin/` 目录提供 **PackWeaverSync**（Paper/Purpur/Spigot 1.20.x 服务端插件）：不装 Mod 即可被桌面端同步数据包——HTTP/TCP 双桥接（与 Mod 同协议）、`deploy` 部署 zip 并热重载、`list`/`pack` 双向同步、`/pws` 命令。详见 [sync-plugin/README.md](../sync-plugin/README.md)。
+
+```bash
+gradle -p sync-plugin build   # 产物 sync-plugin/build/libs/packweaver-sync-1.0.0.jar
+```
+
 ## 路线图
 
 - v1.5：断点/单步调试（游戏内执行轨迹）、积木自由拖拽画布

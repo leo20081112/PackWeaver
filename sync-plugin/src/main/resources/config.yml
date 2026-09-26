@@ -1,0 +1,4 @@
+# PackWeaver Sync 配置
+# 桥接端口（均只监听 127.0.0.1 回环，外网不可访问）
+tcp-port: 32005
+http-port: 32006

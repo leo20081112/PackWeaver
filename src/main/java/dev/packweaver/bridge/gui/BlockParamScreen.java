@@ -18,7 +18,8 @@ import java.util.List;
  * 文本参数直接输入；选项参数循环切换；并提供 ▲▼移动 / 删除 / 设为插入点。
  */
 public class BlockParamScreen extends Screen {
-    private final BlockEditorScreen parent;
+    private final Screen returnTo;
+    private final BlockEditorScreen listParent; // 从积木列表模式打开时非空（提供移动/删除/插入点）
     private final PackProject project;
     private final BlockNode node;
     private final BlockDefs.BlockDef def;
@@ -28,7 +29,18 @@ public class BlockParamScreen extends Screen {
 
     public BlockParamScreen(BlockEditorScreen parent, PackProject project, BlockNode node) {
         super(Text.literal("积木参数"));
-        this.parent = parent;
+        this.returnTo = parent;
+        this.listParent = parent;
+        this.project = project;
+        this.node = node;
+        this.def = BlockDefs.get(node.type);
+    }
+
+    /** 通用入口（蓝图模式等）：仅参数编辑，无列表操作按钮。 */
+    public BlockParamScreen(Screen returnTo, PackProject project, BlockNode node) {
+        super(Text.literal("积木参数"));
+        this.returnTo = returnTo;
+        this.listParent = null;
         this.project = project;
         this.node = node;
         this.def = BlockDefs.get(node.type);
@@ -106,38 +118,40 @@ public class BlockParamScreen extends Screen {
                     .dimensions(this.width / 2 - 90, by, 180, 18).build());
             by += 22;
         }
-        if (def.container) {
+        if (listParent != null && def.container) {
             addDrawableChild(ButtonWidget.builder(Text.literal("在此积木内继续添加（设为插入点）"), b -> {
-                        parent.setInsertTarget(node);
+                        listParent.setInsertTarget(node);
                         back();
                     })
                     .dimensions(this.width / 2 - 90, by, 180, 18).build());
             by += 22;
         }
-        addDrawableChild(ButtonWidget.builder(Text.literal("▲ 上移"), b -> {
-                    parent.moveSelected(node, -1);
-                    back();
-                })
-                .dimensions(this.width / 2 - 90, by, 86, 18).build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("▼ 下移"), b -> {
-                    parent.moveSelected(node, 1);
-                    back();
-                })
-                .dimensions(this.width / 2 + 4, by, 86, 18).build());
-        by += 22;
-        addDrawableChild(ButtonWidget.builder(Text.literal("✕ 删除积木"), b -> {
-                    parent.deleteSelected(node);
-                    back();
-                })
-                .dimensions(this.width / 2 - 90, by, 180, 18).build());
-        by += 22;
+        if (listParent != null) {
+            addDrawableChild(ButtonWidget.builder(Text.literal("▲ 上移"), b -> {
+                        listParent.moveSelected(node, -1);
+                        back();
+                    })
+                    .dimensions(this.width / 2 - 90, by, 86, 18).build());
+            addDrawableChild(ButtonWidget.builder(Text.literal("▼ 下移"), b -> {
+                        listParent.moveSelected(node, 1);
+                        back();
+                    })
+                    .dimensions(this.width / 2 + 4, by, 86, 18).build());
+            by += 22;
+            addDrawableChild(ButtonWidget.builder(Text.literal("✕ 删除积木"), b -> {
+                        listParent.deleteSelected(node);
+                        back();
+                    })
+                    .dimensions(this.width / 2 - 90, by, 180, 18).build());
+            by += 22;
+        }
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.packweaver.done"), b -> back())
                 .dimensions(this.width / 2 - 90, by, 180, 18).build());
     }
 
     private void back() {
         assert this.client != null;
-        this.client.setScreen(parent);
+        this.client.setScreen(returnTo);
     }
 
     @Override

@@ -62,6 +62,14 @@ public final class ClientCommands {
                                 .then(argument("ns", StringArgumentType.word())
                                         .executes(ctx -> diag(ctx.getSource(),
                                                 StringArgumentType.getString(ctx, "ns")))))
+                        .then(literal("graph")
+                                .executes(ctx -> {
+                                    String ns = soleProject(ctx.getSource());
+                                    return ns == null ? 0 : openGraph(ctx.getSource(), ns);
+                                })
+                                .then(argument("ns", StringArgumentType.word())
+                                        .executes(ctx -> openGraph(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "ns")))))
                         .then(literal("wiki").executes(ctx -> open(ctx.getSource(), new WikiScreen())))
                         .then(literal("debug").executes(ctx -> open(ctx.getSource(), new DebugScreen())))
                         .then(literal("export")
@@ -153,6 +161,17 @@ public final class ClientCommands {
         try {
             PackProject p = PackProject.load(ns);
             return open(source, new BlockEditorScreen(p));
+        } catch (Exception e) {
+            source.sendError(Text.literal("打开失败: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    /** 蓝图模式（Blender 节点式交互）。 */
+    private static int openGraph(FabricClientCommandSource source, String ns) {
+        try {
+            PackProject p = PackProject.load(ns);
+            return open(source, new dev.packweaver.bridge.gui.graph.BlockGraphScreen(p));
         } catch (Exception e) {
             source.sendError(Text.literal("打开失败: " + e.getMessage()));
             return 0;

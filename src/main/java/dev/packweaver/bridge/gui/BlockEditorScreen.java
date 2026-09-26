@@ -64,6 +64,11 @@ public class BlockEditorScreen extends Screen {
                     .dimensions(x, 6, 48, 16).build());
             x += 52;
         }
+        addDrawableChild(ButtonWidget.builder(Text.literal("蓝图"), b -> {
+                    assert this.client != null;
+                    this.client.setScreen(new dev.packweaver.bridge.gui.graph.BlockGraphScreen(project));
+                })
+                .dimensions(this.width - 226, 6, 54, 16).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("保存运行"), b -> save(true))
                 .dimensions(this.width - 168, 6, 80, 16).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("IDE模式"), b -> {

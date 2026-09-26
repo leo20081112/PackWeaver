@@ -6,7 +6,7 @@
 |---|---|
 | 加载器 | Fabric（1.20.1，Java 17+） |
 | Mod ID | `packweaver` |
-| 版本 | 1.2.0 |
+| 版本 | 1.3.0 |
 | 许可证 | MIT |
 
 ## 快速开始
@@ -14,10 +14,11 @@
 1. 安装 Fabric Loader ≥ 0.14.21 与 Fabric API（1.20.1），放入本 Mod
 2. 进入世界，输入 `/pw project` → 填项目名/命名空间 → 选模板（7 个内置）→ 创建
 3. `/pw edit` 搭积木（技术模式），底部实时显示生成的命令；「保存运行」写入 datapacks 并热重载
-4. `/pw code <命名空间>` 用 IDE 模式直接改 mcfunction/JSON（语法高亮、片段插入、Tab 补全、Ctrl+S 保存重载）
-5. `/pw diag` 看诊断报告并一键修复；`/pw wiki` 查命令文档/拆解命令；`/pw debug` 监视分数与性能
-6. `/pw preview` 打开 3D 区域预览线框；`/pw snapshot save` 存版本快照
-7. F12：游戏内多窗口叠加层；Shift+F12 编辑窗口布局
+4. `/pw graph` 蓝图模式：节点锚点拖拽连线（Blender 式交互，贝塞尔导线、平移缩放、右键菜单）
+5. `/pw code <命名空间>` 用 IDE 模式直接改 mcfunction/JSON（语法高亮、片段插入、Tab 补全、Ctrl+S 保存重载）
+6. `/pw diag` 看诊断报告并一键修复；`/pw wiki` 查命令文档/拆解命令；`/pw debug` 监视分数与性能
+7. `/pw preview` 打开 3D 区域预览线框；`/pw snapshot save` 存版本快照
+8. F12：游戏内多窗口叠加层；Shift+F12 编辑窗口布局
 
 ## 命令总表
 
@@ -25,6 +26,7 @@
 |---|---|---|
 | `/pw project` | 项目管理（新建/模板/打开/导出/快照/删除） | 2.4 / 12 |
 | `/pw edit [ns]` | 技术模式：积木编辑器 | 9-11 |
+| `/pw graph [ns]` | 蓝图模式：节点锚点拖拽连线（Blender 式） | 9-11 |
 | `/pw code <ns>` | IDE 模式：代码/JSON 编辑器（片段 + Tab 补全） | 4 / 5 / 8.1 |
 | `/pw diag [ns]` | 智能诊断 + 快速修复 | 17 |
 | `/pw wiki` | 命令 Wiki + 命令拆解 | 6 / 扩展C |
@@ -67,7 +69,8 @@
 ## 构建
 
 ```bash
-gradle build   # Gradle 8.7+ / JDK 17，产物 build/libs/packweaver-bridge-1.2.0.jar
+build.bat build   # Windows：自动锚定 JDK17 与 GRADLE_USER_HOME（E:\packweaker\gradle-home）
+gradle build      # 或手动：Gradle 8.7+ / JDK 17，产物 build/libs/packweaver-bridge-1.2.0.jar
 ```
 
 ## 目录结构

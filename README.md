@@ -6,13 +6,13 @@
 |---|---|
 | 加载器 | Fabric（1.20.1，Java 17+） |
 | Mod ID | `packweaver` |
-| 版本 | 1.3.0 |
+| 版本 | 1.4.0 |
 | 许可证 | MIT |
 
 ## 快速开始
 
 1. 安装 Fabric Loader ≥ 0.14.21 与 Fabric API（1.20.1），放入本 Mod
-2. 进入世界，输入 `/pw project` → 填项目名/命名空间 → 选模板（7 个内置）→ 创建
+2. 进入世界，输入 `/pw project` → 填项目名/命名空间 → 选模板（15 个内置）→ 创建
 3. `/pw edit` 搭积木（技术模式），底部实时显示生成的命令；「保存运行」写入 datapacks 并热重载
 4. `/pw graph` 蓝图模式：节点锚点拖拽连线（Blender 式交互，贝塞尔导线、平移缩放、右键菜单）
 5. `/pw code <命名空间>` 用 IDE 模式直接改 mcfunction/JSON（语法高亮、片段插入、Tab 补全、Ctrl+S 保存重载）
@@ -83,7 +83,7 @@ src/main/java/dev/packweaver/bridge/
 │   ├── CodeGen                      # 积木⇄mcfunction 双向转换
 │   ├── PackProject                  # 项目磁盘模型 / pack.mcmeta / zip 导出
 │   ├── PackSnapshots                # 版本控制快照（保存/列表/恢复）
-│   ├── Templates                    # 7 个内置模板
+│   ├── Templates                    # 15 个内置模板（跑酷/竞技场/经济/昼夜等）
 │   ├── Diag                         # 诊断引擎 + 快速修复
 │   └── CommandExplainer             # 命令拆解
 ├── gui/                             # 项目/积木/参数/代码/诊断/Wiki/调试 7 个界面
@@ -94,6 +94,6 @@ src/main/java/dev/packweaver/bridge/
 
 ## 路线图
 
-- v1.3：断点/单步调试（游戏内执行轨迹）、积木自由拖拽画布
-- v1.4：多人协作编辑、社区模板市场
-- v1.5：Paper/Purpur/Folia 服务端适配
+- v1.5：断点/单步调试（游戏内执行轨迹）、积木自由拖拽画布
+- v1.6：多人协作编辑、社区模板市场
+- v1.7：Paper/Purpur/Folia 服务端适配

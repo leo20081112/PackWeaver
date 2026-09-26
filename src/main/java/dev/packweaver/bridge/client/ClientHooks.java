@@ -1,6 +1,5 @@
 package dev.packweaver.bridge.client;
 
-import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
@@ -9,15 +8,19 @@ import net.minecraft.client.util.InputUtil;
 import org.lwjgl.glfw.GLFW;
 
 /**
- * 客户端入口：F12 呼出游戏内多窗口叠加层（规划书第 13.1 / 扩展 D 章）。
+ * 客户端初始化钩子：由主入口在 CLIENT 环境下主动调用
+ * （不再通过 fabric.mod.json 的 client 入口点，规避新版加载器
+ * 对入口类的类加载差异导致的启动崩溃）。
  *
  * - F12：切换叠加层显示/隐藏
  * - Shift+F12：打开窗口布局编辑界面（拖拽移动、显示/隐藏各窗口）
  */
-public class PackWeaverBridgeClient implements ClientModInitializer {
+public final class ClientHooks {
 
-    @Override
-    public void onInitializeClient() {
+    private ClientHooks() {
+    }
+
+    public static void init() {
         KeyBinding overlayKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.packweaver.toggle_overlay", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F12, "category.packweaver"));
 
@@ -41,6 +44,6 @@ public class PackWeaverBridgeClient implements ClientModInitializer {
         OverlayManager.getInstance();
         ClientCommands.register();
         ClientCommands.loadCustomBlocks();
-        dev.packweaver.bridge.client.AreaPreview.isEnabled(); // 触发静态注册
+        AreaPreview.isEnabled(); // 触发静态注册
     }
 }

@@ -1,5 +1,6 @@
 package dev.packweaver.bridge.pack;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -59,6 +60,25 @@ public final class Diag {
         List<Issue> issues = new ArrayList<>();
         Map<String, String> all = new HashMap<>(CodeGen.generate(p.namespace, p.events));
         all.putAll(p.files);
+        // 磁盘上已有但不在元数据中的文件（外部工具/旧版写入）一并纳入诊断
+        try {
+            java.nio.file.Path dataDir = PackProject.projectDir(p.namespace)
+                    .resolve("data").resolve(p.namespace);
+            if (java.nio.file.Files.isDirectory(dataDir)) {
+                try (var walk = java.nio.file.Files.walk(dataDir)) {
+                    walk.filter(java.nio.file.Files::isRegularFile).forEach(f -> {
+                        String rel = dataDir.relativize(f).toString().replace('\\', '/');
+                        if (!all.containsKey(rel) && (rel.endsWith(".mcfunction") || rel.endsWith(".json"))) {
+                            try {
+                                all.put(rel, java.nio.file.Files.readString(f));
+                            } catch (IOException ignored) {
+                            }
+                        }
+                    });
+                }
+            }
+        } catch (IOException ignored) {
+        }
 
         Set<String> definedFns = new HashSet<>();
         for (String path : all.keySet()) {
@@ -294,7 +314,12 @@ public final class Diag {
     }
 
     private static String fnName(String ns, String path) {
-        return ns + ":" + path.substring(ns.length() + "/functions/".length()).replace(".mcfunction", "");
+        String prefix = ns + "/functions/";
+        if (!path.startsWith(prefix)) {
+            // 磁盘扫描进来的非函数目录文件（如 ns/bad.json 旁的杂项）不参与函数图
+            return ns + ":" + path;
+        }
+        return ns + ":" + path.substring(prefix.length()).replace(".mcfunction", "");
     }
 
     /** 应用快速修复；返回被修改的项目（需要调用方 save）。 */

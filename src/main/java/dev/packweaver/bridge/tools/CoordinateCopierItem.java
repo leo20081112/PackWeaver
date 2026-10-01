@@ -41,7 +41,7 @@ public class CoordinateCopierItem extends Item {
                         ? NbtHelper.toPrettyPrintedText(blockEntity.createNbtWithIdentifyingData()).getString()
                         : world.getBlockState(pos).toString();
             } else {
-                payload = String.format("%d %d %d", pos.getX(), pos.getY(), pos.getZ());
+                payload = ClientClipboard.positionPayload(pos);
             }
             ClientClipboard.copy(payload);
             if (context.getPlayer() != null) {
@@ -60,6 +60,19 @@ public class CoordinateCopierItem extends Item {
 
     /** 仅在客户端被加载（world.isClient 分支内首次引用）。 */
     private static final class ClientClipboard {
+        /** 坐标格式（规划书 14.3）：普通=基础 "X Y Z"；按住 Ctrl=JSON 格式。 */
+        static String positionPayload(BlockPos pos) {
+            net.minecraft.client.MinecraftClient client = net.minecraft.client.MinecraftClient.getInstance();
+            boolean ctrl = net.minecraft.client.util.InputUtil.isKeyPressed(
+                    client.getWindow().getHandle(), org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_CONTROL)
+                    || net.minecraft.client.util.InputUtil.isKeyPressed(
+                    client.getWindow().getHandle(), org.lwjgl.glfw.GLFW.GLFW_KEY_RIGHT_CONTROL);
+            if (ctrl) {
+                return String.format("{\"x\":%d,\"y\":%d,\"z\":%d}", pos.getX(), pos.getY(), pos.getZ());
+            }
+            return String.format("%d %d %d", pos.getX(), pos.getY(), pos.getZ());
+        }
+
         static void copy(String text) {
             net.minecraft.client.MinecraftClient client = net.minecraft.client.MinecraftClient.getInstance();
             client.execute(() -> client.keyboard.setClipboard(text));

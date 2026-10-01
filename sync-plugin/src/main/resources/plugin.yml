@@ -1,5 +1,5 @@
 name: PackWeaverSync
-version: '1.0.2'
+version: '1.1.0'
 main: dev.packweaver.sync.PackWeaverSyncPlugin
 api-version: '1.20'
 description: 'PackWeaver 服务端同步插件：HTTP/TCP 桥接，部署数据包并热重载（规划书第 19/20 章）'

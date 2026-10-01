@@ -15,6 +15,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.stream.Stream;
 
 /**
@@ -38,11 +39,15 @@ public final class HttpBridge {
 
     public void start() {
         try {
-            server = HttpServer.create(
-                    new InetSocketAddress(InetAddress.getLoopbackAddress(), plugin.httpPort()), 0);
+            InetAddress bind = "0.0.0.0".equals(plugin.getBindAddress())
+                    ? null : InetAddress.getLoopbackAddress();
+            server = HttpServer.create(new InetSocketAddress(bind, plugin.httpPort()), 0);
             server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
             server.createContext("/pw", this::route);
             server.start();
+            if (!plugin.getAuthToken().isBlank() && bind != null) {
+                plugin.getLogger().warning("已设置 auth-token 但监听地址为回环 —— 局域网访问请将 bind-address 设为 0.0.0.0");
+            }
         } catch (IOException e) {
             plugin.getLogger().warning("HTTP 桥接启动失败: " + e.getMessage());
         }
@@ -62,20 +67,29 @@ public final class HttpBridge {
                 return;
             }
             cors(ex);
+            // 鉴权：配置了 auth-token 时，除 OPTIONS 外全部端点需携带 X-PW-Token 请求头
+            String token = plugin.getAuthToken();
+            if (token != null && !token.isBlank()
+                    && !token.equals(ex.getRequestHeaders().getFirst("X-PW-Token"))) {
+                err(ex, 401, "缺少或错误的 X-PW-Token 请求头");
+                return;
+            }
             String path = ex.getRequestURI().getPath();
-            JsonObject body = "POST".equals(ex.getRequestMethod()) ? readJson(ex) : new JsonObject();
+            // 注意：POST 请求体只允许在使用处读取一次（预读会饿死后续端点）
             switch (path) {
                 case "/pw/ping" -> {
                     JsonObject o = ok();
                     o.addProperty("mod", "packweaver-sync");
-                    o.addProperty("version", "1.0.0");
+                    o.addProperty("version", "1.1.0");
                     o.addProperty("server", Bukkit.getName());
                     send(ex, 200, o);
                 }
                 case "/pw/stats" -> send(ex, 200, stats());
                 case "/pw/list" -> send(ex, 200, list());
                 case "/pw/pack" -> pack(ex);
-                case "/pw/eval" -> eval(ex, body);
+                case "/pw/backups" -> backups(ex);
+                case "/pw/backup" -> backupDownload(ex);
+                case "/pw/eval" -> eval(ex);
                 case "/pw/reload" -> reload(ex);
                 case "/pw/deploy" -> deploy(ex);
                 default -> err(ex, 404, "未知端点: " + path);
@@ -137,8 +151,10 @@ public final class HttpBridge {
         String safe = sanitize(name);
         Path dir = datapacksDir();
         Path target = dir == null ? null : dir.resolve(safe + ".zip").normalize();
-        if (target == null || !target.startsWith(dir) || !Files.exists(target)) {
-            err(ex, 404, "数据包不存在: " + safe);
+        if (target == null || dir == null || !target.normalize().startsWith(dir.normalize())
+                || !Files.exists(target)) {
+            err(ex, 404, "数据包不存在: " + safe + "（dir=" + dir + " exists="
+                    + (target != null && Files.exists(target)) + "）");
             return;
         }
         byte[] data = Files.readAllBytes(target);
@@ -149,7 +165,8 @@ public final class HttpBridge {
         }
     }
 
-    private void eval(HttpExchange ex, JsonObject body) throws IOException {
+    private void eval(HttpExchange ex) throws IOException {
+        JsonObject body = readJson(ex);
         String command = body.has("command") ? body.get("command").getAsString() : "";
         if (command.isBlank()) {
             err(ex, 400, "缺少 command 字段");
@@ -202,20 +219,38 @@ public final class HttpBridge {
         }
         Files.createDirectories(dir);
         Path target = dir.resolve("packweaver-" + ns + ".zip");
-        // 先写临时文件再原子替换，避免重载时读到半截 zip
-        Path tmp = dir.resolve("packweaver-" + ns + ".zip.tmp");
-        Files.write(tmp, zip);
+        // 同名重复部署前自动备份旧包（保留 backups-keep 份）
+        if (Files.exists(target)) {
+            backupCopy(dir, ns, target);
+        }
+        // 先写临时文件再原子替换，避免重载时读到半截 zip；
+        // 已启用数据包的 zip 被服务器持有 —— 先 disable 释放句柄，替换后 enable
+        Path tmpFile = dir.resolve("packweaver-" + ns + ".zip.tmp");
+        Files.write(tmpFile, zip);
+        boolean replaced = false;
         try {
-            Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            Files.move(tmpFile, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
                     java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-            Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException locked) {
+            plugin.onMainThread(() -> Bukkit.dispatchCommand(Bukkit.getConsoleSender(),
+                    "datapack disable \"file/packweaver-" + ns + ".zip\""), 10000);
+            Files.deleteIfExists(target);
+            try {
+                Files.move(tmpFile, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException e) {
+                Files.move(tmpFile, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            plugin.onMainThread(() -> Bukkit.dispatchCommand(Bukkit.getConsoleSender(),
+                    "datapack enable \"file/packweaver-" + ns + ".zip\""), 10000);
+            replaced = true;
         }
         Boolean done = plugin.onMainThread(
-                () -> Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "minecraft:reload"), 10000);
+                () -> Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "minecraft:reload"), 30000);
         JsonObject o = ok();
         o.addProperty("deployed", target.getFileName().toString());
         o.addProperty("bytes", zip.length);
+        o.addProperty("replaced", replaced);
         o.addProperty("reloaded", done != null && done);
         send(ex, 200, o);
         plugin.getLogger().info("[Bridge] 部署 " + target.getFileName() + "（" + zip.length + " 字节）");
@@ -232,6 +267,64 @@ public final class HttpBridge {
             }
         }
         return "";
+    }
+
+    /** 备份旧部署包到 plugins/PackWeaverSync/backups/&lt;ns&gt;/，超量清理。 */
+    private void backupCopy(Path dir, String ns, Path target) throws IOException {
+        Path bdir = plugin.getDataFolder().toPath().resolve("backups").resolve(ns);
+        Files.createDirectories(bdir);
+        String stamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(new java.util.Date());
+        Files.copy(target, bdir.resolve(stamp + ".zip"),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        List<Path> files = new java.util.ArrayList<>();
+        try (Stream<Path> s = Files.list(bdir)) {
+            s.filter(p -> p.getFileName().toString().matches("\\d{8}_\\d{6}\\.zip")).forEach(files::add);
+        }
+        files.sort(java.util.Comparator.comparing(p -> p.getFileName().toString()));
+        int extra = files.size() - plugin.getBackupsKeep();
+        for (int i = 0; i < extra; i++) {
+            Files.deleteIfExists(files.get(i));
+        }
+    }
+
+    /** GET /pw/backups?ns=xx —— 列出该命名空间的部署备份。 */
+    private void backups(HttpExchange ex) throws IOException {
+        String ns = sanitize(queryParam(ex, "ns"));
+        Path bdir = plugin.getDataFolder().toPath().resolve("backups").resolve(ns);
+        JsonObject o = ok();
+        JsonArray arr = new JsonArray();
+        if (Files.isDirectory(bdir)) {
+            try (Stream<Path> s = Files.list(bdir)) {
+                s.map(p -> p.getFileName().toString())
+                        .filter(n -> n.matches("\\d{8}_\\d{6}\\.zip"))
+                        .sorted(java.util.Comparator.reverseOrder())
+                        .forEach(arr::add);
+            }
+        }
+        o.add("backups", arr);
+        send(ex, 200, o);
+    }
+
+    /** GET /pw/backup?ns=xx&file=yyyyMMdd_HHmmss.zip —— 下载指定备份。 */
+    private void backupDownload(HttpExchange ex) throws IOException {
+        String ns = sanitize(queryParam(ex, "ns"));
+        String file = queryParam(ex, "file");
+        if (!file.matches("\\d{8}_\\d{6}\\.zip")) {
+            err(ex, 400, "备份文件名不合法");
+            return;
+        }
+        Path bdir = plugin.getDataFolder().toPath().resolve("backups").resolve(ns);
+        Path target = bdir.resolve(file).normalize();
+        if (!target.startsWith(bdir) || !Files.exists(target)) {
+            err(ex, 404, "备份不存在");
+            return;
+        }
+        byte[] data = Files.readAllBytes(target);
+        ex.getResponseHeaders().add("Content-Type", "application/zip");
+        ex.sendResponseHeaders(200, data.length);
+        try (OutputStream out = ex.getResponseBody()) {
+            out.write(data);
+        }
     }
 
     /** 命名空间/文件名白名单清洗，防路径穿越。 */

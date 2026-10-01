@@ -80,6 +80,21 @@ public class PackWeaverSyncPlugin extends JavaPlugin {
         return getConfig().getLong("max-deploy-mb", 64L);
     }
 
+    /** 鉴权令牌（空 = 不鉴权，仅建议回环监听时使用）。 */
+    public String getAuthToken() {
+        return getConfig().getString("auth-token", "");
+    }
+
+    /** 监听地址：127.0.0.1 仅本机；0.0.0.0 允许局域网（务必同时设置 auth-token）。 */
+    public String getBindAddress() {
+        return getConfig().getString("bind-address", "127.0.0.1");
+    }
+
+    /** 每个命名空间保留的部署备份数。 */
+    public int getBackupsKeep() {
+        return getConfig().getInt("backups-keep", 10);
+    }
+
     public PerfTracker perf() {
         return perf;
     }

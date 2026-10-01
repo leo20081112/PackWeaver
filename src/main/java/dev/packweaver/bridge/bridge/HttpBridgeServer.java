@@ -15,6 +15,8 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executors;
 
 /**
@@ -157,6 +159,26 @@ public final class HttpBridgeServer {
         Path datapacks = server.getSavePath(WorldSavePath.DATAPACKS);
         Path target = datapacks.resolve("packweaver-" + ns + ".zip");
         Files.createDirectories(datapacks);
+        // 同名重复部署前自动备份旧包（保留最近 5 份）
+        if (Files.exists(target)) {
+            try {
+                Path bdir = net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir()
+                        .resolve("packweaver").resolve("backups").resolve("deploy-" + ns);
+                Files.createDirectories(bdir);
+                String stamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(new java.util.Date());
+                Files.copy(target, bdir.resolve(stamp + ".zip"),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                List<Path> backups = new ArrayList<>();
+                try (var s = Files.list(bdir)) {
+                    s.filter(f -> f.getFileName().toString().matches("\\d{8}_\\d{6}\\.zip"))
+                            .sorted().forEach(backups::add);
+                }
+                for (int i = 0; i < backups.size() - 5; i++) {
+                    Files.deleteIfExists(backups.get(i));
+                }
+            } catch (IOException ignored) {
+            }
+        }
         // 先写临时文件再原子替换，避免 MC 重载时读到半截 zip；
         // 已启用数据包的 zip 被服务器长期持有 —— 先 disable 释放句柄，替换后 enable
         Path tmpFile = datapacks.resolve("packweaver-" + ns + ".zip.tmp");

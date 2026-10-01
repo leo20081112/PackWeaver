@@ -6,7 +6,7 @@
 |---|---|
 | 加载器 | Fabric（1.20.1，Java 17+） |
 | Mod ID | `packweaver` |
-| 版本 | 1.5.0 |
+| 版本 | 1.9.0 |
 | 许可证 | MIT |
 
 ## 快速开始
@@ -28,9 +28,12 @@
 | `/pw edit [ns]` | 蓝图模式（默认）：节点锚点拖拽连线，55 积木 | 9-11 |
 | `/pw graph [ns]` | 蓝图模式（同 /pw edit） | 9-11 |
 | `/pw code <ns>` | IDE 模式：代码/JSON 编辑器（片段 + Tab 补全） | 4 / 5 / 8.1 |
+| `/pw recipe [ns]` | 配方设计器（有序/无序/熔炼 → JSON） | 5.1 |
+| `/pw regex` | 正则测试器（高亮/分组/模板） | 14.6 |
 | `/pw diag [ns]` | 智能诊断 + 快速修复 | 17 |
 | `/pw wiki` | 命令 Wiki + 命令拆解 | 6 / 扩展C |
 | `/pw debug` | 计分板/性能/桥接监视 | 16.4 |
+| `/pw debugctl [ns]` | 调试控制（日志断点/条件断点/执行轨迹） | 16.2 |
 | `/pw run <ns> [fn]` | ▶ 运行：重载并执行项目函数 | 2.4 |
 | `/pw export [ns]` | 导出数据包 zip | 12 |
 | `/pw snapshot save/list/restore` | 版本控制快照 | 7 |

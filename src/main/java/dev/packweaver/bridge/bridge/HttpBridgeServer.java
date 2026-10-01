@@ -35,6 +35,16 @@ public final class HttpBridgeServer {
     private volatile HttpServer httpServer;
     private volatile MinecraftServer server;
 
+    /** 外部注册的调试路由（TEMP：供 DebugHook 等临时功能扩展，前缀匹配）。 */
+    private static final java.util.concurrent.ConcurrentMap<String,
+            java.util.function.Function<com.sun.net.httpserver.HttpExchange, String>> EXTRA_ROUTES =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    public static void registerExternalHandler(String pathPrefix,
+            java.util.function.Function<com.sun.net.httpserver.HttpExchange, String> handler) {
+        EXTRA_ROUTES.put(pathPrefix, handler);
+    }
+
     public void start() {
         net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STARTING.register(s -> server = s);
         net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STOPPED.register(s -> server = null);
@@ -62,12 +72,14 @@ public final class HttpBridgeServer {
             cors(exchange);
             String path = exchange.getRequestURI().getPath();
             String method = exchange.getRequestMethod();
-            JsonObject body = "POST".equals(method) ? readJson(exchange) : new JsonObject();
+            // 注意：请求体只允许在使用处读取一次（提前消费会饿死外部调试路由）
 
             if ("/pw/ping".equals(path)) {
                 JsonObject o = ok();
                 o.addProperty("mod", "packweaver-bridge");
-                o.addProperty("version", "1.1.0");
+                o.addProperty("version", net.fabricmc.loader.api.FabricLoader.getInstance()
+                        .getModContainer("packweaver")
+                        .map(c -> c.getMetadata().getVersion().getFriendlyString()).orElse("unknown"));
                 send(exchange, 200, o);
             } else if ("/pw/stats".equals(path)) {
                 JsonObject o = ok();
@@ -78,6 +90,7 @@ public final class HttpBridgeServer {
                     err(exchange, 503, "服务器未运行（请先进入世界）");
                     return;
                 }
+                JsonObject body = readJson(exchange);
                 String command = body.has("command") ? body.get("command").getAsString() : "";
                 if (command.isBlank()) {
                     err(exchange, 400, "缺少 command 字段");
@@ -99,6 +112,21 @@ public final class HttpBridgeServer {
             } else if ("/pw/deploy".equals(path)) {
                 deploy(exchange);
             } else {
+                for (var e : EXTRA_ROUTES.entrySet()) {
+                    String pfx = e.getKey();
+                    if (path.equals(pfx) || path.startsWith(pfx + "/")) {
+                        String resp = e.getValue().apply(exchange);
+                        if (resp != null) {
+                            byte[] data = resp.getBytes(StandardCharsets.UTF_8);
+                            exchange.getResponseHeaders().add("Content-Type", "application/json; charset=utf-8");
+                            exchange.sendResponseHeaders(200, data.length);
+                            try (OutputStream out = exchange.getResponseBody()) {
+                                out.write(data);
+                            }
+                        }
+                        return;
+                    }
+                }
                 err(exchange, 404, "未知端点: " + path);
             }
         } catch (Exception e) {
@@ -129,23 +157,48 @@ public final class HttpBridgeServer {
         Path datapacks = server.getSavePath(WorldSavePath.DATAPACKS);
         Path target = datapacks.resolve("packweaver-" + ns + ".zip");
         Files.createDirectories(datapacks);
-        // 先写临时文件再原子替换，避免 MC 重载时读到半截 zip
-        Path tmp = datapacks.resolve("packweaver-" + ns + ".zip.tmp");
-        Files.write(tmp, zip);
+        // 先写临时文件再原子替换，避免 MC 重载时读到半截 zip；
+        // 已启用数据包的 zip 被服务器长期持有 —— 先 disable 释放句柄，替换后 enable
+        Path tmpFile = datapacks.resolve("packweaver-" + ns + ".zip.tmp");
+        Files.write(tmpFile, zip);
+        boolean replaced = false;
         try {
-            Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            Files.move(tmpFile, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
                     java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-            Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException locked) {
+            runOnServer(server, "datapack disable \"file/packweaver-" + ns + ".zip\"");
+            Files.deleteIfExists(target);
+            try {
+                Files.move(tmpFile, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException e) {
+                Files.move(tmpFile, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            runOnServer(server, "datapack enable \"file/packweaver-" + ns + ".zip\"");
+            replaced = true;
         }
         server.execute(() -> server.getCommandManager()
                 .executeWithPrefix(server.getCommandSource(), "reload"));
         JsonObject o = ok();
         o.addProperty("deployed", target.getFileName().toString());
         o.addProperty("bytes", zip.length);
+        o.addProperty("replaced", replaced);
         send(exchange, 200, o);
         dev.packweaver.bridge.PackWeaverBridge.LOGGER.info(
                 "[Bridge] HTTP 部署: {} ({} 字节)", target.getFileName(), zip.length);
+    }
+
+    /** 在服务器主线程执行控制台命令并等待（部署流程用）。 */
+    private static void runOnServer(MinecraftServer server, String command) {
+        java.util.concurrent.CompletableFuture<Integer> f = new java.util.concurrent.CompletableFuture<>();
+        server.execute(() -> f.complete(server.getCommandManager()
+                .executeWithPrefix(server.getCommandSource().withSilent(), command)));
+        try {
+            f.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            dev.packweaver.bridge.PackWeaverBridge.LOGGER.warn(
+                    "[Bridge] 主线程命令失败: {} ({})", command, e.getMessage());
+        }
     }
 
     /** 命名空间白名单清洗，防止路径穿越。 */

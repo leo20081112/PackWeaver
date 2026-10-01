@@ -64,13 +64,14 @@ public class PackWeaverBridge implements ModInitializer {
                 // 懒加载：仅客户端会真正加载 ClientBridge/ClientHooks 及其引用的客户端类
                 ClientBridge.init();
             } catch (Throwable t) {
-                LOGGER.error("[PackWeaver] 客户端功能初始化失败（游戏可正常运行，相关功能不可用）: {}", t.toString());
+                LOGGER.error("[PackWeaver] 客户端功能初始化失败（游戏可正常运行，相关功能不可用）", t);
             }
         }
-        LOGGER.info("[PackWeaver] Bridge v{} 初始化完成：TCP {} / HTTP {}",
+        LOGGER.info("[PackWeaver] Bridge v{} 初始化完成：TCP {} / HTTP {} / env={}",
                 FabricLoader.getInstance().getModContainer(MOD_ID)
                         .map(c -> c.getMetadata().getVersion().getFriendlyString()).orElse("?"),
-                BRIDGE_DEFAULT_PORT, HTTP_BRIDGE_PORT);
+                BRIDGE_DEFAULT_PORT, HTTP_BRIDGE_PORT,
+                FabricLoader.getInstance().getEnvironmentType());
     }
 
     /** 仅客户端分支内被首次引用，服务端不会加载。 */

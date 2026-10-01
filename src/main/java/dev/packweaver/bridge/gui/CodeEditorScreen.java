@@ -37,11 +37,11 @@ public class CodeEditorScreen extends Screen {
             "粒子", "particle minecraft:portal ~ ~1 ~ 0.5 0.5 0.5 0.1 50",
             "计分检测", "execute if score @s kills matches 10.. run tellraw @a {\"text\":\"有人到 10 分了\"}");
 
-    private static final Set<String> COMPLETIONS = Set.of(
+    private static final Set<String> COMPLETIONS = Set.copyOf(java.util.Arrays.asList(
             "execute", "tellraw", "give", "tp", "effect", "give", "gamemode", "playsound",
             "particle", "setblock", "fill", "scoreboard", "tag", "function", "summon",
             "title", "data", "kill", "say", "time", "weather", "worldborder", "clear",
-            "advancement", "schedule", "trigger", "bossbar", "team", "spreadplayers");
+            "advancement", "schedule", "trigger", "bossbar", "team", "spreadplayers"));
 
     public CodeEditorScreen(PackProject project, String fn) {
         super(Text.literal("PackWeaver IDE - " + project.namespace));

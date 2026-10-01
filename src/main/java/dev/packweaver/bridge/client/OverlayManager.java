@@ -22,10 +22,11 @@ import java.util.Map;
  * 布局持久化到 config/packweaver-overlay.json。
  */
 public final class OverlayManager {
-    private static final OverlayManager INSTANCE = new OverlayManager();
+    // 注意：CONFIG/GSON 必须先于 INSTANCE 初始化（INSTANCE 构造中会读取 CONFIG）
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG = net.fabricmc.loader.api.FabricLoader.getInstance()
             .getGameDir().resolve("config").resolve("packweaver-overlay.json");
+    private static final OverlayManager INSTANCE = new OverlayManager();
 
     private final Map<String, OverlayWindow> windows = new LinkedHashMap<>();
     private boolean visible = true;

@@ -34,19 +34,19 @@ public final class Diag {
         }
     }
 
-    private static final Set<String> COMMANDS = Set.of(
+    private static final Set<String> COMMANDS = Set.copyOf(java.util.Arrays.asList(
             "say", "tellraw", "give", "tp", "teleport", "effect", "gamemode", "playsound", "particle",
             "setblock", "fill", "time", "weather", "scoreboard", "tag", "function", "title", "kill",
             "summon", "data", "execute", "reload", "worldborder", "spreadplayers", "forceload",
             "advancement", "recipe", "schedule", "loot", "item", "replaceitem", "bossbar", "clear",
             "difficulty", "enchant", "experience", "xp", "fillbiome", "gamemode", "help", "locate",
             "me", "msg", "particle", "perf", "place", "random", "rotate", "ride", "spawnpoint",
-            "stopsound", "spectate", "team", "tell", "trigger", "waypoint", "whitelist", "gamerule");
+            "stopsound", "spectate", "team", "tell", "trigger", "waypoint", "whitelist", "gamerule"));
 
-    private static final Set<String> SELECTOR_ARGS = Set.of(
+    private static final Set<String> SELECTOR_ARGS = Set.copyOf(java.util.Arrays.asList(
             "x", "y", "z", "dx", "dy", "dz", "distance", "sort", "limit", "type", "tag", "team",
             "name", "nbt", "scores", "level", "gamemode", "x_rotation", "y_rotation", "advancements",
-            "predicate", "type", "ry", "rym", "rx", "rxm", "l", "lm", "m", "h", "hm");
+            "predicate", "ry", "rym", "rx", "rxm", "l", "lm", "m", "h", "hm"));
 
     private static final Set<String> COMMON_ITEMS = Set.of(
             "diamond", "diamond_sword", "diamond_pickaxe", "iron_sword", "iron_pickaxe", "iron_axe",

@@ -45,5 +45,12 @@ public final class ClientHooks {
         ClientCommands.register();
         ClientCommands.loadCustomBlocks();
         AreaPreview.isEnabled(); // 触发静态注册
+        try {
+            // TEMP 临时调试钩子（仅当 packweaver-debug.flag 存在时激活）
+            DebugHook.init();
+        } catch (Throwable t) {
+            dev.packweaver.bridge.PackWeaverBridge.LOGGER.warn(
+                    "[PackWeaver] TEMP 调试钩子初始化异常: {}", t.toString());
+        }
     }
 }

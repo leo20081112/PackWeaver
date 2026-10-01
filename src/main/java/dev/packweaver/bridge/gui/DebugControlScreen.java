@@ -24,6 +24,7 @@ public class DebugControlScreen extends Screen {
     private final List<String> functions = new ArrayList<>();
     private int fnIndex;
     private net.minecraft.client.gui.widget.TextFieldWidget lineField;
+    private net.minecraft.client.gui.widget.TextFieldWidget condField;
     private String message = "";
 
     public DebugControlScreen(PackProject project, Screen back) {
@@ -66,6 +67,11 @@ public class DebugControlScreen extends Screen {
         addDrawableChild(ButtonWidget.builder(Text.literal("＋ 添加日志断点"), b -> addBreakpoint())
                 .dimensions(cx + 0, 56, 110, 18).build());
 
+        condField = new net.minecraft.client.gui.widget.TextFieldWidget(
+                this.textRenderer, cx - 108, 82, 255, 16, Text.literal("条件"));
+        condField.setMaxLength(120);
+        addSelectableChild(condField);
+
         addDrawableChild(ButtonWidget.builder(
                         Text.literal("函数执行轨迹: " + (project.traceMode ? "开" : "关")),
                         b -> {
@@ -73,7 +79,7 @@ public class DebugControlScreen extends Screen {
                             b.setMessage(Text.literal("函数执行轨迹: " + (project.traceMode ? "开" : "关")));
                             saveQuietly();
                         })
-                .dimensions(cx - 150, 82, 145, 18).build());
+                .dimensions(cx - 150, 106, 145, 18).build());
         addDrawableChild(ButtonWidget.builder(Text.literal(
                         dev.packweaver.bridge.client.PwDebuggerTag.has() ? "调试输出: 已接收(移除标签)" : "调试输出: 未接收(给我加标签)"),
                         b -> {
@@ -81,16 +87,17 @@ public class DebugControlScreen extends Screen {
                             b.setMessage(Text.literal(dev.packweaver.bridge.client.PwDebuggerTag.has()
                                     ? "调试输出: 已接收(移除标签)" : "调试输出: 未接收(给我加标签)"));
                         })
-                .dimensions(cx + 5, 82, 145, 18).build());
+                .dimensions(cx + 5, 106, 145, 18).build());
 
         addDrawableChild(ButtonWidget.builder(Text.literal("💾 保存并重载（注入生效）"), b -> saveAndReload())
-                .dimensions(cx - 150, 112, 145, 18).build());
+                .dimensions(cx - 150, 132, 145, 18).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("清空全部断点"), b -> {
                     project.debugLines.clear();
+                    project.debugConds.clear();
                     saveQuietly();
                     message = "§a已清空";
                 })
-                .dimensions(cx + 5, 112, 145, 18).build());
+                .dimensions(cx + 5, 132, 145, 18).build());
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.packweaver.done"), b -> {
                     assert this.client != null;
                     this.client.setScreen(back);
@@ -135,6 +142,17 @@ public class DebugControlScreen extends Screen {
         if (!marks.contains(line)) {
             marks.add(line);
         }
+        // 可选条件（execute if 语法）
+        String cond = condField.getText().trim();
+        if (cond.isEmpty()) {
+            java.util.Map<String, String> conds = project.debugConds.get(functions.get(fnIndex));
+            if (conds != null) {
+                conds.remove(String.valueOf(line));
+            }
+        } else {
+            project.debugConds.computeIfAbsent(functions.get(fnIndex), k -> new java.util.LinkedHashMap<>())
+                    .put(String.valueOf(line), cond);
+        }
         saveQuietly();
         message = "§a断点已添加并保存";
         lineField.setText("");
@@ -167,9 +185,11 @@ public class DebugControlScreen extends Screen {
         renderBackground(context);
         context.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, 10, 0xFFFFFF);
         context.drawTextWithShadow(this.textRenderer, "行号", this.width / 2 - 108, 50, 0xB0BEC5);
+        context.drawTextWithShadow(this.textRenderer, "断点条件（可选，execute if 语法，如 score @s kills matches 3..）",
+                this.width / 2 - 108, 74, 0xB0BEC5);
 
         // 断点列表
-        int y = 140;
+        int y = 168;
         context.drawTextWithShadow(this.textRenderer, "当前断点（行号以保存内容为准）：", 30, y, 0x4FC3F7);
         y += 13;
         for (var e : project.debugLines.entrySet()) {

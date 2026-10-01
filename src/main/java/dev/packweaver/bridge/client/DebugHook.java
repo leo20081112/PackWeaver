@@ -21,6 +21,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -262,8 +263,19 @@ public final class DebugHook {
                 }
                 if (lines.isEmpty()) {
                     p.debugLines.remove(path);
+                    p.debugConds.remove(path);
                 } else {
                     p.debugLines.put(path, lines);
+                    // 可选 conds: {"行号": "execute if 条件"}
+                    if (body.has("conds") && body.get("conds").isJsonObject()) {
+                        Map<String, String> conds = new java.util.LinkedHashMap<>();
+                        for (var e : body.getAsJsonObject("conds").entrySet()) {
+                            conds.put(e.getKey(), e.getValue().getAsString());
+                        }
+                        p.debugConds.put(path, conds);
+                    } else {
+                        p.debugConds.remove(path);
+                    }
                 }
                 p.save();
                 JsonObject o = ok();
@@ -289,6 +301,49 @@ public final class DebugHook {
                 return o;
             } catch (IOException e) {
                 return err("操作失败: " + e.getMessage());
+            }
+        }
+        if ("create_recipe".equals(action)) {
+            // body: {ns, name, type: shaped|shapeless|smelting, grid:[9], result, count}
+            try {
+                Path dir = dev.packweaver.bridge.pack.PackProject.projectDir(ns);
+                dev.packweaver.bridge.pack.PackProject p =
+                        java.nio.file.Files.exists(dir == null ? Path.of("") : dir.resolve(dev.packweaver.bridge.pack.PackProject.META_FILE))
+                                ? dev.packweaver.bridge.pack.PackProject.load(ns)
+                                : new dev.packweaver.bridge.pack.PackProject();
+                if (p.namespace == null) {
+                    p.namespace = ns;
+                    p.name = "配方项目 " + ns;
+                }
+                String name = body.has("name") ? body.get("name").getAsString() : "";
+                String type = body.has("type") ? body.get("type").getAsString() : "shaped";
+                if (!name.matches("[a-z0-9_/]+")) {
+                    return err("配方名不合法: " + name);
+                }
+                String result = body.has("result") ? body.get("result").getAsString() : "";
+                int count = body.has("count") ? body.get("count").getAsInt() : 1;
+                String[][] grid = new String[3][3];
+                if (body.has("grid") && body.get("grid").isJsonArray()) {
+                    var arr = body.getAsJsonArray("grid");
+                    for (int gi = 0; gi < 9 && gi < arr.size(); gi++) {
+                        grid[gi / 3][gi % 3] = arr.get(gi).isJsonNull() ? "" : arr.get(gi).getAsString();
+                    }
+                }
+                String json = switch (type) {
+                    case "shapeless" -> dev.packweaver.bridge.pack.RecipeGen.shapeless(grid, result, count);
+                    case "smelting" -> dev.packweaver.bridge.pack.RecipeGen.smelting(grid[0][0], result);
+                    default -> dev.packweaver.bridge.pack.RecipeGen.shaped(grid, result, count);
+                };
+                String path = ns + "/recipes/" + name + ".json";
+                p.files.put(path, json);
+                p.save();
+                JsonObject o = ok();
+                o.addProperty("path", path);
+                return o;
+            } catch (IOException e) {
+                return err("操作失败: " + e.getMessage());
+            } catch (IllegalArgumentException e) {
+                return err(e.getMessage());
             }
         }
         return onClient(client -> runAction(client, action, ns, tpl));
@@ -338,6 +393,22 @@ public final class DebugHook {
             }
                 case "open_wiki" -> {
                     mc.setScreen(new dev.packweaver.bridge.gui.WikiScreen());
+                    return ok();
+                }
+                case "open_regex" -> {
+                    mc.setScreen(new dev.packweaver.bridge.gui.RegexScreen());
+                    return ok();
+                }
+                case "open_recipe" -> {
+                    if (mc.getServer() == null) {
+                        return err("未进入世界");
+                    }
+                    List<String> all = dev.packweaver.bridge.pack.PackProject.listProjects();
+                    if (all.isEmpty()) {
+                        return err("没有项目");
+                    }
+                    mc.setScreen(new dev.packweaver.bridge.gui.RecipeDesignerScreen(
+                            dev.packweaver.bridge.pack.PackProject.load(ns.isEmpty() ? all.get(0) : ns), null));
                     return ok();
                 }
                 case "open_debugctl" -> {

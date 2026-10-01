@@ -78,6 +78,16 @@ public final class ClientCommands {
                                 .then(argument("ns", StringArgumentType.word())
                                         .executes(ctx -> openDebugCtl(ctx.getSource(),
                                                 StringArgumentType.getString(ctx, "ns")))))
+                        .then(literal("recipe")
+                                .executes(ctx -> {
+                                    String ns = soleProject(ctx.getSource());
+                                    return ns == null ? 0 : openRecipe(ctx.getSource(), ns);
+                                })
+                                .then(argument("ns", StringArgumentType.word())
+                                        .executes(ctx -> openRecipe(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "ns")))))
+                        .then(literal("regex").executes(ctx ->
+                                open(ctx.getSource(), new dev.packweaver.bridge.gui.RegexScreen())))
                         .then(literal("wiki").executes(ctx -> open(ctx.getSource(), new WikiScreen())))
                         .then(literal("debug").executes(ctx -> open(ctx.getSource(), new DebugScreen())))
                         .then(literal("export")
@@ -170,6 +180,17 @@ public final class ClientCommands {
             PackProject p = PackProject.load(ns);
             // /pw edit 默认打开蓝图画布（Blender 式节点交互）
             return open(source, new dev.packweaver.bridge.gui.graph.BlockGraphScreen(p));
+        } catch (Exception e) {
+            source.sendError(Text.literal("打开失败: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    /** 配方设计器（规划书 5.1）。 */
+    private static int openRecipe(FabricClientCommandSource source, String ns) {
+        try {
+            PackProject p = PackProject.load(ns);
+            return open(source, new dev.packweaver.bridge.gui.RecipeDesignerScreen(p, null));
         } catch (Exception e) {
             source.sendError(Text.literal("打开失败: " + e.getMessage()));
             return 0;

@@ -70,6 +70,8 @@ public class CodeEditorScreen extends Screen {
 
     @Override
     protected void init() {
+        addDrawableChild(ButtonWidget.builder(Text.literal("格式化"), b -> formatJson())
+                .dimensions(this.width - 334, 6, 50, 18).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("调试"), b -> {
                     assert this.client != null;
                     this.client.setScreen(new DebugControlScreen(project, this));
@@ -179,6 +181,27 @@ public class CodeEditorScreen extends Screen {
             lines.set(caretLine, cur.substring(0, caretCol) + insert + cur.substring(caretCol));
             caretCol += insert.length();
             message = "§a补全: " + best + (matches.size() > 1 ? "（其余: " + String.join(", ", matches.subList(1, Math.min(matches.size(), 5))) + "）" : "");
+        }
+    }
+
+    /** JSON 格式化（规划书 14.1）：解析当前缓冲 → prettyPrint 重排。 */
+    private void formatJson() {
+        if (!fn.endsWith(".json")) {
+            message = "§7仅 JSON 文件支持格式化";
+            return;
+        }
+        try {
+            String cleaned = String.join("\n", lines).replaceAll(",\\s*([}\\]])", "$1");
+            var el = new com.google.gson.JsonParser().parse(cleaned);
+            String pretty = new com.google.gson.GsonBuilder().setPrettyPrinting()
+                    .create().toJson(el);
+            lines.clear();
+            for (String l : pretty.split("\n", -1)) {
+                lines.add(l);
+            }
+            message = "§a已格式化（Ctrl+S 保存）";
+        } catch (Exception ex) {
+            message = "§cJSON 无效: " + ex.getMessage();
         }
     }
 

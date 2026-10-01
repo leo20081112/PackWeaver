@@ -35,6 +35,8 @@ public class PackProject {
     public Map<String, String> files = new TreeMap<>();
     /** 日志断点（规划书 16.2）：文件路径 → 1 起始行号列表 */
     public Map<String, List<Integer>> debugLines = new TreeMap<>();
+    /** 条件断点（16.2 条件断点）：文件路径 → (行号字符串 → execute if 条件) */
+    public Map<String, Map<String, String>> debugConds = new TreeMap<>();
     /** 函数执行轨迹（规划书 16.3）：开启后每个函数入口注入一条轨迹输出 */
     public boolean traceMode = false;
 
@@ -65,6 +67,9 @@ public class PackProject {
         }
         if (p.debugLines == null) {
             p.debugLines = new TreeMap<>();
+        }
+        if (p.debugConds == null) {
+            p.debugConds = new TreeMap<>();
         }
         return p;
     }
@@ -124,18 +129,21 @@ public class PackProject {
             for (int m : sorted) {
                 int idx = m - 1;
                 if (idx >= 0 && idx < lines.size()) {
-                    lines.add(idx, debugTell("行" + m + " " + fn, "gold"));
+                    Map<String, String> conds = debugConds.get(path);
+                    String cond = conds != null ? conds.get(String.valueOf(m)) : null;
+                    lines.add(idx, debugTell("行" + m + " " + fn, "gold", cond));
                 }
             }
         }
         if (traceMode) {
-            lines.add(0, debugTell("→ " + fn, "yellow"));
+            lines.add(0, debugTell("→ " + fn, "yellow", null));
         }
         return String.join("\n", lines);
     }
 
-    private String debugTell(String msg, String color) {
-        return "execute if entity @a[tag=pw_debugger] run tellraw @a[tag=pw_debugger] "
+    private String debugTell(String msg, String color, String cond) {
+        String condPart = (cond == null || cond.isBlank()) ? "" : "if " + cond.trim() + " ";
+        return "execute " + condPart + "if entity @a[tag=pw_debugger] run tellraw @a[tag=pw_debugger] "
                 + "{\"text\":\"[PW] " + msg + "\",\"color\":\"" + color + "\"}";
     }
 

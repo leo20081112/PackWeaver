@@ -33,6 +33,10 @@ public class PackProject {
     public List<BlockNode> events = new ArrayList<>();
     /** 手写文件（相对 data/ 路径 → 内容），IDE 模式直接编辑 */
     public Map<String, String> files = new TreeMap<>();
+    /** 日志断点（规划书 16.2）：文件路径 → 1 起始行号列表 */
+    public Map<String, List<Integer>> debugLines = new TreeMap<>();
+    /** 函数执行轨迹（规划书 16.3）：开启后每个函数入口注入一条轨迹输出 */
+    public boolean traceMode = false;
 
     private static Path datapacksDir() {
         var server = MinecraftClient.getInstance().getServer();
@@ -58,6 +62,9 @@ public class PackProject {
         }
         if (p.files == null) {
             p.files = new TreeMap<>();
+        }
+        if (p.debugLines == null) {
+            p.debugLines = new TreeMap<>();
         }
         return p;
     }
@@ -94,9 +101,42 @@ public class PackProject {
 
         writeIfChanged(dir.resolve("pack.mcmeta"), packMcmeta());
         for (Map.Entry<String, String> e : all.entrySet()) {
-            writeIfChanged(dir.resolve("data").resolve(e.getKey()), e.getValue());
+            // 调试注入（规划书 16.2/16.3）：日志断点 + 函数入口轨迹；
+            // 输出仅对携带 pw_debugger 标签的玩家可见（16.6 单人调试）
+            writeIfChanged(dir.resolve("data").resolve(e.getKey()), applyDebug(e.getKey(), e.getValue()));
         }
         Files.writeString(dir.resolve(META_FILE), GSON.toJson(this));
+    }
+
+    /** 行号断点 + 轨迹注入；倒序插入保证行号不漂移。 */
+    private String applyDebug(String path, String content) {
+        if (!path.endsWith(".mcfunction")) {
+            return content;
+        }
+        String fn = namespace + ":" + path
+                .substring((namespace + "/functions/").length())
+                .replace(".mcfunction", "");
+        List<String> lines = new ArrayList<>(List.of(content.split("\n", -1)));
+        List<Integer> marks = debugLines.get(path);
+        if (marks != null && !marks.isEmpty()) {
+            List<Integer> sorted = new ArrayList<>(marks);
+            sorted.sort(java.util.Comparator.reverseOrder());
+            for (int m : sorted) {
+                int idx = m - 1;
+                if (idx >= 0 && idx < lines.size()) {
+                    lines.add(idx, debugTell("行" + m + " " + fn, "gold"));
+                }
+            }
+        }
+        if (traceMode) {
+            lines.add(0, debugTell("→ " + fn, "yellow"));
+        }
+        return String.join("\n", lines);
+    }
+
+    private String debugTell(String msg, String color) {
+        return "execute if entity @a[tag=pw_debugger] run tellraw @a[tag=pw_debugger] "
+                + "{\"text\":\"[PW] " + msg + "\",\"color\":\"" + color + "\"}";
     }
 
     private static String packMcmeta() {

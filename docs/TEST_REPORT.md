@@ -25,6 +25,17 @@
 | 15 | no_pw_errors | ✅ | 运行日志无 PackWeaver ERROR |
 | 16 | cleanup | ✅ | 测试项目清理 |
 
+## 第二轮：调试功能 e2e（v1.8.0，2026-10-01）
+
+| 验证项 | 结果 |
+|---|---|
+| 日志断点注入（保存时在目标行前生成 `execute if entity @a[tag=pw_debugger] run tellraw ...`） | ✅ 磁盘文件断言 |
+| 函数执行轨迹注入（函数首行 `→ ns:fn`） | ✅ 磁盘文件断言 |
+| 标签过滤输出（无 pw_debugger 标签时静默） | ✅ |
+| 服务器 tellraw / 注入函数运行 | ✅ result 正常 |
+| 截图复核 | ✅ 叠加层正常渲染、无异常 |
+| 衍生修复：`/tag` 等服务器命令经聊天通道发送时被客户端命令树拦截报"未知命令" → 现自动回退服务器执行 | ✅ |
+
 ## 本轮发现并修复的缺陷（按严重度）
 
 1. **🔴 OverlayManager 静态初始化 NPE（v1.0.0 起所有机器启动崩溃的总根因）**：`INSTANCE` 声明在 `CONFIG` 之前，构造器读取未初始化的 CONFIG → `ExceptionInInitializerError` → 游戏启动即崩。此前"另一台机器闪退"与此同源（并非 Loader 版本问题）。修复字段顺序。

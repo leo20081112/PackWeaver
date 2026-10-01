@@ -70,13 +70,18 @@ public class CodeEditorScreen extends Screen {
 
     @Override
     protected void init() {
+        addDrawableChild(ButtonWidget.builder(Text.literal("调试"), b -> {
+                    assert this.client != null;
+                    this.client.setScreen(new DebugControlScreen(project, this));
+                })
+                .dimensions(this.width - 278, 6, 52, 18).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("保存 Ctrl+S"), b -> save())
-                .dimensions(this.width - 210, 6, 90, 18).build());
+                .dimensions(this.width - 222, 6, 100, 18).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("诊断"), b -> {
                     assert this.client != null;
                     this.client.setScreen(new DiagScreen(project, this));
                 })
-                .dimensions(this.width - 115, 6, 50, 18).build());
+                .dimensions(this.width - 118, 6, 53, 18).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("蓝图模式"), b -> {
                     assert this.client != null;
                     this.client.setScreen(new dev.packweaver.bridge.gui.graph.BlockGraphScreen(project));

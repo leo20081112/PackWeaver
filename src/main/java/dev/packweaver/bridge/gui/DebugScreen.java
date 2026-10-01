@@ -30,9 +30,23 @@ public class DebugScreen extends Screen {
     protected void init() {
         refresh();
         addDrawableChild(ButtonWidget.builder(Text.literal("刷新"), b -> refresh())
-                .dimensions(this.width - 110, 6, 50, 18).build());
+                .dimensions(this.width - 168, 6, 50, 18).build());
+        addDrawableChild(ButtonWidget.builder(Text.literal("调试控制"), b -> {
+                    assert this.client != null;
+                    String ns = dev.packweaver.bridge.pack.PackProject.listProjects().stream()
+                            .findFirst().orElse(null);
+                    if (ns == null) {
+                        return;
+                    }
+                    try {
+                        this.client.setScreen(new DebugControlScreen(
+                                dev.packweaver.bridge.pack.PackProject.load(ns), this));
+                    } catch (Exception ignored) {
+                    }
+                })
+                .dimensions(this.width - 114, 6, 56, 18).build());
         addDrawableChild(ButtonWidget.builder(Text.translatable("screen.packweaver.done"), b -> close())
-                .dimensions(this.width - 56, 6, 50, 18).build());
+                .dimensions(this.width - 54, 6, 48, 18).build());
     }
 
     private void refresh() {

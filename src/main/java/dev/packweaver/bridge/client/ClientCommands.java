@@ -70,6 +70,14 @@ public final class ClientCommands {
                                 .then(argument("ns", StringArgumentType.word())
                                         .executes(ctx -> openGraph(ctx.getSource(),
                                                 StringArgumentType.getString(ctx, "ns")))))
+                        .then(literal("debugctl")
+                                .executes(ctx -> {
+                                    String ns = soleProject(ctx.getSource());
+                                    return ns == null ? 0 : openDebugCtl(ctx.getSource(), ns);
+                                })
+                                .then(argument("ns", StringArgumentType.word())
+                                        .executes(ctx -> openDebugCtl(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "ns")))))
                         .then(literal("wiki").executes(ctx -> open(ctx.getSource(), new WikiScreen())))
                         .then(literal("debug").executes(ctx -> open(ctx.getSource(), new DebugScreen())))
                         .then(literal("export")
@@ -162,6 +170,17 @@ public final class ClientCommands {
             PackProject p = PackProject.load(ns);
             // /pw edit 默认打开蓝图画布（Blender 式节点交互）
             return open(source, new dev.packweaver.bridge.gui.graph.BlockGraphScreen(p));
+        } catch (Exception e) {
+            source.sendError(Text.literal("打开失败: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    /** 调试控制（日志断点/执行轨迹，规划书第 16 章）。 */
+    private static int openDebugCtl(FabricClientCommandSource source, String ns) {
+        try {
+            PackProject p = PackProject.load(ns);
+            return open(source, new dev.packweaver.bridge.gui.DebugControlScreen(p, null));
         } catch (Exception e) {
             source.sendError(Text.literal("打开失败: " + e.getMessage()));
             return 0;

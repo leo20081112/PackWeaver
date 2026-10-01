@@ -220,7 +220,20 @@ public final class DebugHook {
             }
             client.inGameHud.getChatHud().addToMessageHistory(text);
             if (text.startsWith("/")) {
-                client.player.networkHandler.sendCommand(text.substring(1));
+                // 客户端命令树没有的命令（如 /tag /function）需转发服务器执行
+                String cmd = text.substring(1);
+                var dispatcher = client.getNetworkHandler().getCommandDispatcher();
+                if (dispatcher.getRoot().getChild(cmd.split(" ")[0]) != null) {
+                    client.player.networkHandler.sendCommand(cmd);
+                } else {
+                    var server = client.getServer();
+                    if (server != null) {
+                        server.getCommandManager().executeWithPrefix(
+                                server.getCommandSource().withSilent(), cmd);
+                    } else {
+                        client.player.networkHandler.sendChatMessage(text);
+                    }
+                }
             } else {
                 client.player.networkHandler.sendChatMessage(text);
             }
@@ -232,6 +245,52 @@ public final class DebugHook {
         String action = body.has("action") ? body.get("action").getAsString() : "";
         String ns = body.has("ns") ? body.get("ns").getAsString() : "";
         String tpl = body.has("tpl") ? body.get("tpl").getAsString() : "hello";
+        // 不需要客户端线程的数据操作（断点/轨迹）直接处理
+        if ("set_breakpoints".equals(action)) {
+            try {
+                dev.packweaver.bridge.pack.PackProject p =
+                        dev.packweaver.bridge.pack.PackProject.load(ns);
+                String path = body.has("path") ? body.get("path").getAsString() : "";
+                if (path.isBlank()) {
+                    return err("缺少 path");
+                }
+                List<Integer> lines = new ArrayList<>();
+                if (body.has("lines") && body.get("lines").isJsonArray()) {
+                    for (var el : body.getAsJsonArray("lines")) {
+                        lines.add(el.getAsInt());
+                    }
+                }
+                if (lines.isEmpty()) {
+                    p.debugLines.remove(path);
+                } else {
+                    p.debugLines.put(path, lines);
+                }
+                p.save();
+                JsonObject o = ok();
+                o.addProperty("path", path);
+                JsonArray arr = new JsonArray();
+                for (int ln : p.debugLines.getOrDefault(path, List.of())) {
+                    arr.add(ln);
+                }
+                o.add("lines", arr);
+                return o;
+            } catch (IOException e) {
+                return err("操作失败: " + e.getMessage());
+            }
+        }
+        if ("toggle_trace".equals(action)) {
+            try {
+                dev.packweaver.bridge.pack.PackProject p =
+                        dev.packweaver.bridge.pack.PackProject.load(ns);
+                p.traceMode = body.has("on") && body.get("on").getAsBoolean();
+                p.save();
+                JsonObject o = ok();
+                o.addProperty("traceMode", p.traceMode);
+                return o;
+            } catch (IOException e) {
+                return err("操作失败: " + e.getMessage());
+            }
+        }
         return onClient(client -> runAction(client, action, ns, tpl));
     }
 
@@ -277,10 +336,30 @@ public final class DebugHook {
                         dev.packweaver.bridge.pack.PackProject.load(ns.isEmpty() ? all.get(0) : ns), null));
                 return ok();
             }
-            case "open_wiki" -> {
-                mc.setScreen(new dev.packweaver.bridge.gui.WikiScreen());
-                return ok();
-            }
+                case "open_wiki" -> {
+                    mc.setScreen(new dev.packweaver.bridge.gui.WikiScreen());
+                    return ok();
+                }
+                case "open_debugctl" -> {
+                    if (mc.getServer() == null) {
+                        return err("未进入世界");
+                    }
+                    List<String> all = dev.packweaver.bridge.pack.PackProject.listProjects();
+                    if (all.isEmpty()) {
+                        return err("没有项目");
+                    }
+                    mc.setScreen(new dev.packweaver.bridge.gui.DebugControlScreen(
+                            dev.packweaver.bridge.pack.PackProject.load(ns.isEmpty() ? all.get(0) : ns), null));
+                    return ok();
+                }
+                case "set_breakpoints" -> {
+                    // 已移至 action() 的非线程路径处理
+                    return ok();
+                }
+                case "toggle_trace" -> {
+                    // 已移至 action() 的非线程路径处理
+                    return ok();
+                }
             case "close_screen" -> {
                 mc.setScreen(null);
                 return ok();
